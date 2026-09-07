@@ -10,7 +10,7 @@ authors:
 repository-code: "https://github.com/chiibitsu/gates"
 url: "https://chiibitsu.com"
 license: MIT
-version: "1.0.0"
+version: "1.0.1"
 date-released: "2026-09-07"
 keywords:
   - ci

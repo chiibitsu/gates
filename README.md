@@ -60,9 +60,9 @@ the placeholder with a real toolkit commit SHA:
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@17861ae1a5b2679a879a04aa125972c257c1cbda  # v1.0.0
+    uses: chiibitsu/gates/.github/workflows/gates.yml@242866820ab5b4aa527efdeefe20bf5ac36e11d2  # v1.0.1
     with:
-      gates_ref: 17861ae1a5b2679a879a04aa125972c257c1cbda
+      gates_ref: 242866820ab5b4aa527efdeefe20bf5ac36e11d2 # v1.0.1
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
@@ -80,15 +80,19 @@ one commit running the gate scripts from another. Bump both with a custom manage
     {
       "customType": "regex",
       "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
-      "matchStrings": ["gates_ref:\\s*(?<currentDigest>[0-9a-f]{40})"],
+      "matchStrings": ["gates_ref:\\s*(?<currentDigest>[0-9a-f]{40})\\s*#\\s*(?<currentValue>v[0-9.]+)"],
       "depNameTemplate": "chiibitsu/gates",
-      "packageNameTemplate": "https://github.com/chiibitsu/gates",
-      "datasourceTemplate": "git-refs",
-      "currentValueTemplate": "main"
+      "datasourceTemplate": "github-tags"
     }
   ]
 }
 ```
+
+The version comment beside `gates_ref` is load-bearing, not decoration: it gives the
+custom manager the same release tag the `github-actions` manager resolves for the `uses:`
+line, so both pins move to one commit. Tracking a branch here instead let the two resolve
+independently and land a workflow definition from one commit running gate scripts from
+another.
 
 **The SHA appears twice on purpose.** A reusable workflow cannot discover its own
 commit: `github.workflow_sha` and `github.workflow_ref` name the caller's workflow,
@@ -128,6 +132,13 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 2. Plant `fixtures/<name>/bad/` — the smallest tree that trips it.
 3. Run `./selftest.sh`. It must report that the gate catches its fixture **and** passes
    this tree. Without the fixture the selftest fails, which is the point.
+
+## Releases
+
+| Version | Commit | Use it? |
+|---|---|---|
+| v1.0.1 | `2428668` | **Yes.** |
+| v1.0.0 | `39f78d6` | **No.** Four gates could pass a violation: migrations-lint read a commented-out `enable row level security` as evidence; actions-sha-pinned missed two legal YAML spellings of the `uses` key; required-files and nextjs-env skipped every git-backed check inside a linked worktree or submodule. It also deleted a `.gates-selftest` directory in the tree it was inspecting. The tag stays where it is — a published tag on a gate toolkit does not get moved — and this table is the record. |
 
 ## Known gaps
 

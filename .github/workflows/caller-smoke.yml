@@ -16,6 +16,6 @@ permissions:
 
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@17861ae1a5b2679a879a04aa125972c257c1cbda
+    uses: chiibitsu/gates/.github/workflows/gates.yml@242866820ab5b4aa527efdeefe20bf5ac36e11d2
     with:
-      gates_ref: 17861ae1a5b2679a879a04aa125972c257c1cbda
+      gates_ref: 242866820ab5b4aa527efdeefe20bf5ac36e11d2 # v1.0.1

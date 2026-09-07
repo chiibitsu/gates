@@ -1,10 +1,10 @@
 # Part of chiibitsu/gates by Angeline S. Viray (Chiibitsu Labs). MIT. https://github.com/chiibitsu/gates
-# Copy this to .github/workflows/gates.yml in your repo. The SHA below is v1.0.0, and it
+# Copy this to .github/workflows/gates.yml in your repo. The SHA below is v1.0.1, and it
 # appears twice on purpose: a reusable workflow cannot discover its own commit, so the
 # ref you pin has to be handed to it. Change both together.
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@17861ae1a5b2679a879a04aa125972c257c1cbda
+    uses: chiibitsu/gates/.github/workflows/gates.yml@242866820ab5b4aa527efdeefe20bf5ac36e11d2
     with:
-      gates_ref: 17861ae1a5b2679a879a04aa125972c257c1cbda
+      gates_ref: 242866820ab5b4aa527efdeefe20bf5ac36e11d2 # v1.0.1
