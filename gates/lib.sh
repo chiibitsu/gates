@@ -23,6 +23,10 @@ fi
 # Absolute and symlink-resolved, so the root-relative exclusions in the gates below
 # compare against the same spelling grep and find will print.
 ROOT="$(cd "$ROOT" && pwd -P)"
+# `.git` is a DIRECTORY only in a classic checkout. In a linked worktree or a submodule it
+# is a FILE, and a `[ -d "$ROOT/.git" ]` test therefore skipped every git-backed check and
+# reported ok over a tree it never asked git about. Ask git, don't guess from the layout.
+in_git_repo() { git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 FAILS=0
 fail() { echo "FAIL [$GATE] $*"; FAILS=$((FAILS+1)); }
 finish() {

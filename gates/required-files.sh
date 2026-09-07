@@ -9,7 +9,7 @@ LIST="$ROOT/scripts/gates/required-files.txt"
 while IFS= read -r p; do
   p="${p%%#*}"; p="$(echo "$p" | xargs)"; [ -z "$p" ] && continue
   if [ ! -e "$ROOT/$p" ]; then fail "missing: $p"; continue; fi
-  if [ -d "$ROOT/.git" ] && [ -f "$ROOT/$p" ]; then
+  if [ -f "$ROOT/$p" ] && in_git_repo "$ROOT"; then
     git -C "$ROOT" ls-files --error-unmatch "$p" >/dev/null 2>&1 || fail "untracked: $p"
   fi
 done < "$LIST"

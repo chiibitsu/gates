@@ -17,7 +17,20 @@ KEY="^[[:space:]]*-?[[:space:]]*['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
 
 while IFS= read -r line; do
   ref="${line##*@}"; ref="${ref%% *}"; ref="${ref%%#*}"
-  if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then fail "$line"; fi
+  # A quoted value — `uses: "owner/repo@<sha>"` — is legal YAML and left the closing quote
+  # glued to the ref, so a correctly pinned action was reported as unpinned. A gate that
+  # goes red on compliant input is a gate people learn to merge past, which is how a real
+  # finding gets ignored later.
+  ref="${ref%\"}"; ref="${ref%\'}"
+  if [ "${line#*docker://}" != "$line" ]; then
+    # Container actions are pinned by IMAGE DIGEST, not by a git commit. Demanding 40 hex
+    # of `docker://image@sha256:<64 hex>` failed the strongest pin available for that form.
+    if ! [[ "$ref" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      fail "$line (container action: pin by @sha256:<digest>)"
+    fi
+  elif ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+    fail "$line"
+  fi
 done < <(grep -rEn "${KEY}[^./[:space:]]" "$WF" --include='*.yml' --include='*.yaml' \
-           | grep -vE "['\"]?uses['\"]?[[:space:]]*:[[:space:]]*\./")
+           | grep -vE "['\"]?uses['\"]?[[:space:]]*:[[:space:]]*['\"]?\./")
 finish

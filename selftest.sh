@@ -40,8 +40,10 @@ STAGE_DIR=""
 unstage() { [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR"; STAGE_DIR=""; }
 stage() { # $1 = tree to check
   unstage
-  STAGE_DIR="$1/.gates-selftest"
-  rm -rf "$STAGE_DIR"; mkdir -p "$STAGE_DIR"
+  # mktemp -d, never a fixed path. The fixed `.gates-selftest` was deleted unconditionally
+  # before every staged run, so a target repository that happened to hold a directory of
+  # that name lost it — the toolkit destroying data in the tree it was asked to inspect.
+  STAGE_DIR="$(mktemp -d "$1/.gates-selftest.XXXXXX")"
   cp "$HERE/gates/check_secrets.py" "$HERE/gates/check_references.py" "$STAGE_DIR/"
 }
 cleanup() { unstage; rm -f "$OUT"; }

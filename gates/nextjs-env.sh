@@ -24,7 +24,23 @@ X=(--exclude=nextjs-env.sh --exclude=denylist.txt --exclude=package-lock.json --
 # proxy-location.sh went permanently green. Only `<root>/fixtures/<gate>/bad/` is
 # dropped, and only when the root IS the tree containing it, so pointing this gate at
 # fixtures/nextjs-env/bad still trips it.
-not_fixture() { grep -vE "^${ROOT}/fixtures/[^/]+/bad/" || true; }
+# Prefix matching in the shell, NOT a regex. ROOT was interpolated into a `grep -E`
+# pattern, so a checkout path containing `(` made grep abort — and the `|| true` that
+# swallowed the error turned the abort into an empty result, which reads exactly like
+# "no violations". A gate that goes green because its own filter crashed is the failure
+# this toolkit exists to refuse, and it was sitting inside the filter.
+not_fixture() {
+  local prefix="$ROOT/fixtures/" line rest gate
+  while IFS= read -r line; do
+    rest=""
+    case "$line" in "$prefix"*) rest="${line#"$prefix"}" ;; esac
+    if [ -n "$rest" ]; then
+      gate="${rest%%/*}"
+      case "${rest#"$gate"/}" in bad/*) continue ;; esac
+    fi
+    printf '%s\n' "$line"
+  done
+}
 
 # 1. A server-only key exposed to the browser bundle via the NEXT_PUBLIC_ prefix.
 #    Names, deliberately: this is the one check in the toolkit that reads names rather
@@ -38,11 +54,14 @@ fi
 
 # 2. A committed .env file (only meaningful inside a git repo). .env.example is the
 #    one that is meant to be tracked.
-if [ -d "$ROOT/.git" ]; then
-  if git -C "$ROOT" ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -vE '\.example$' > /tmp/gate_env_$$; then
-    fail ".env file is tracked:"; cat /tmp/gate_env_$$
+if in_git_repo "$ROOT"; then
+  # mktemp, not a PID-derived name in a world-writable directory: on a shared runner that
+  # name is guessable and pre-creatable.
+  ENVHITS="$(mktemp)"
+  if git -C "$ROOT" ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -vE '\.example$' > "$ENVHITS"; then
+    fail ".env file is tracked:"; cat "$ENVHITS"
   fi
-  rm -f /tmp/gate_env_$$
+  rm -f "$ENVHITS"
 fi
 
 # 3. Optional denylist: names that must never appear in this repo (client names, repo
