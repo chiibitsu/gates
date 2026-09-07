@@ -4,31 +4,42 @@
 # named like a server secret, a tracked .env that is not .env.example, and an optional
 # per-repo denylist of names and slugs.
 #
-# This gate used to also match credential SHAPES. That regex is deleted. Three scanners
-# were matching the same shapes in three places — this one, gitleaks, and
-# check_secrets.py — and this was the weakest of the three: tree only, no history, no
-# commit metadata, no ref names, no redaction of what it printed. Duplicated defences
-# drift, and the copy nobody maintains is the one people trust. Credential values are
-# check_secrets.py's job and gitleaks' job. What is left here is the one thing neither
-# of them does.
-#
-# The denylist stays: two live clients' repo names once shipped into a public template
-# and cost a history rewrite. Names, not shapes — no other scanner looks for those.
+# This gate used to also match credential SHAPES. That regex is deleted. Credential values
+# are check_secrets.py's job and gitleaks'. What is left is the one thing neither does.
 source "$(dirname "$0")/lib.sh"
 
 X=(--exclude=nextjs-env.sh --exclude=denylist.txt --exclude=package-lock.json --exclude='*.lock')
 
-# The toolkit's OWN planted failures, excluded ROOT-RELATIVELY. A blanket
-# --exclude-dir=fixtures would also exclude the fixture when the gate is pointed AT the
-# fixture, and the gate could then no longer fail — which is how the first version of
-# proxy-location.sh went permanently green. Only `<root>/fixtures/<gate>/bad/` is
-# dropped, and only when the root IS the tree containing it, so pointing this gate at
-# fixtures/nextjs-env/bad still trips it.
-# Prefix matching in the shell, NOT a regex. ROOT was interpolated into a `grep -E`
-# pattern, so a checkout path containing `(` made grep abort — and the `|| true` that
-# swallowed the error turned the abort into an empty result, which reads exactly like
-# "no violations". A gate that goes green because its own filter crashed is the failure
-# this toolkit exists to refuse, and it was sitting inside the filter.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# Run one search and leave its surviving lines in $WORK/hits. NOTHING here decides from a
+# pipeline's exit status, and nothing pipes into `grep -q`.
+#
+# `grep -q` exits the moment it sees its first match. Upstream then takes SIGPIPE, and under
+# `set -o pipefail` the whole condition reads FALSE — so a file with 20,000 violations
+# reported `ok` while a file with one was caught. A gate that gets quieter the worse the
+# tree is, is worse than no gate.
+#
+# grep's exit codes are also separated here: 0 is matches, 1 is none, anything else is an
+# ERROR. Collapsing 2 into "no matches" is how the previous version of this file went green
+# when its own filter crashed.
+scan() { # "$@" = grep arguments after the flags in X
+  local rc=0
+  set +e
+  tgrep "${X[@]}" "$@" "$ROOT" > "$WORK/raw" 2> "$WORK/err"
+  rc=$?
+  set -e
+  if [ "$rc" -gt 1 ]; then
+    fail "search failed (grep exit $rc) — this gate reports nothing rather than a false pass:"
+    sed 's/^/    /' "$WORK/err" | head -5
+    return 0
+  fi
+  not_fixture < "$WORK/raw" > "$WORK/hits"
+}
+
+# The toolkit's OWN planted failures, excluded by shell prefix match — never by building a
+# regex out of $ROOT, which aborts grep on a checkout path containing `(`.
 not_fixture() {
   local prefix="$ROOT/fixtures/" line rest gate
   while IFS= read -r line; do
@@ -42,37 +53,31 @@ not_fixture() {
   done
 }
 
-# 1. A server-only key exposed to the browser bundle via the NEXT_PUBLIC_ prefix.
-#    Names, deliberately: this is the one check in the toolkit that reads names rather
-#    than values, because the mistake it catches IS a naming mistake.
-if tgrep "${X[@]}" --exclude=AGENTS.md --exclude-dir=docs --exclude-dir=product \
-     'NEXT_PUBLIC_[A-Z0-9_]*(SERVICE|SECRET|PRIVATE)' "$ROOT" 2>/dev/null | not_fixture | grep -q .; then
-  fail "NEXT_PUBLIC_ variable named like a server secret:"
-  tgrep "${X[@]}" --exclude=AGENTS.md --exclude-dir=docs --exclude-dir=product \
-    'NEXT_PUBLIC_[A-Z0-9_]*(SERVICE|SECRET|PRIVATE)' "$ROOT" 2>/dev/null | not_fixture
+# 1. A server-only key exposed to the browser bundle via the NEXT_PUBLIC_ prefix. Names,
+#    deliberately: the mistake this catches IS a naming mistake.
+scan --exclude=AGENTS.md --exclude-dir=docs --exclude-dir=product \
+     'NEXT_PUBLIC_[A-Z0-9_]*(SERVICE|SECRET|PRIVATE)'
+if [ -s "$WORK/hits" ]; then
+  fail "NEXT_PUBLIC_ variable named like a server secret:"; cat "$WORK/hits"
 fi
 
-# 2. A committed .env file (only meaningful inside a git repo). .env.example is the
-#    one that is meant to be tracked.
+# 2. A committed .env file. .env.example is the one that is meant to be tracked.
 if in_git_repo "$ROOT"; then
-  # mktemp, not a PID-derived name in a world-writable directory: on a shared runner that
-  # name is guessable and pre-creatable.
-  ENVHITS="$(mktemp)"
-  if git -C "$ROOT" ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -vE '\.example$' > "$ENVHITS"; then
-    fail ".env file is tracked:"; cat "$ENVHITS"
+  git -C "$ROOT" ls-files | grep -E '(^|/)\.env(\..*)?$' | grep -vE '\.example$' > "$WORK/env" || true
+  if [ -s "$WORK/env" ]; then
+    fail ".env file is tracked:"; cat "$WORK/env"
   fi
-  rm -f "$ENVHITS"
 fi
 
-# 3. Optional denylist: names that must never appear in this repo (client names, repo
-#    slugs, owner handles). One per line, case-insensitive. Absent file = skipped.
+# 3. Optional denylist: names that must never appear (client names, repo slugs, owner
+#    handles). One per line, case-insensitive. Absent file = skipped.
 DL="$ROOT/scripts/gates/denylist.txt"
 if [ -f "$DL" ]; then
   while IFS= read -r term; do
     term="${term%%#*}"; term="$(echo "$term" | xargs)"; [ -z "$term" ] && continue
-    if tgrep "${X[@]}" -i -F -- "$term" "$ROOT" 2>/dev/null | not_fixture | grep -q .; then
-      fail "denylisted term '$term' present:"
-      tgrep "${X[@]}" -i -F -- "$term" "$ROOT" 2>/dev/null | not_fixture
+    scan -i -F -- "$term"
+    if [ -s "$WORK/hits" ]; then
+      fail "denylisted term '$term' present:"; cat "$WORK/hits"
     fi
   done < "$DL"
 fi

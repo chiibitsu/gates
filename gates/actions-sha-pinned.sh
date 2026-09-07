@@ -29,6 +29,14 @@ while IFS= read -r line; do
   [ -n "$val" ] || continue
   ref="${val##*@}"
   case "$val" in
+    ./*)
+      # A local action lives in this repo and has no ref to pin. Decided from the VALUE:
+      # the old line-level `grep -v` matched `./` ANYWHERE on the line, so
+      # `uses: actions/checkout@v4 # note uses: ./local-action` was dropped before the gate
+      # looked at it and a mutable tag walked through the supply-chain check. A comment is
+      # not a value — third time that exact confusion produced a defect in this file.
+      continue
+      ;;
     docker://*)
       # Container actions are pinned by IMAGE DIGEST, not by a git commit. Demanding 40 hex
       # of `docker://image@sha256:<64 hex>` failed the strongest pin available for that form.
@@ -40,6 +48,5 @@ while IFS= read -r line; do
       if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then fail "$line"; fi
       ;;
   esac
-done < <(grep -rEn "${KEY}[^./[:space:]]" "$WF" --include='*.yml' --include='*.yaml' \
-           | grep -vE "['\"]?uses['\"]?[[:space:]]*:[[:space:]]*['\"]?\./")
+done < <(grep -rEn "${KEY}" "$WF" --include='*.yml' --include='*.yaml')
 finish
