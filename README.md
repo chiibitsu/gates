@@ -154,10 +154,12 @@ header, which is the honest account of what that scanner does not do.
 - **Unicode tables come from the running CPython**, so a verdict can differ between
   runners. `--selftest` prints the interpreter and Unicode versions so drift is visible.
 - **`check_references.py` only recognises paths under a fixed set of top-level
-  directories** it was written for: `.github/`, `canon/`, `docs/`, `ops/`, `patterns/`,
-  `product/`, `team/`, `templates/`, `scripts/`. Anything else is not read as an in-repo
-  path and is therefore not checked — `src/…` and `supabase/…` in a Next.js repo, and
-  `gates/…` and `fixtures/…` in **this** repo, so a rename inside the toolkit's own
+  directories** it was written for — .github, canon, docs, ops, patterns, product, team,
+  templates, scripts (named without backticks here on purpose: backtick them and this
+  gate correctly reads them as paths this repo does not have, which is how the sentence
+  documenting the gate first broke it). Anything else is not read as an in-repo path and
+  is therefore not checked: src and supabase in a Next.js repo, and gates and fixtures in
+  **this** repo, so a rename inside the toolkit's own
   primary directory is invisible to this gate. The list is not extended here on purpose:
   the file is vendored byte-for-byte from vibeOS and a divergent second copy is the
   parallel-copies failure this shop has logged five times. It moves in vibeOS, or when
