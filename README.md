@@ -60,11 +60,22 @@ the placeholder with a real toolkit commit SHA:
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@186ff054aebc0b3f581ae079e6fad4035e36f2d0  # v1.0.0
+    uses: chiibitsu/gates/.github/workflows/gates.yml@39f78d697778c52ecf1cb2914cb00b5db9025e7a  # v1.0.0
+    with:
+      gates_ref: 39f78d697778c52ecf1cb2914cb00b5db9025e7a
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
-you. Renovate with digest pinning will open a PR when a new tag lands.
+you. Renovate with digest pinning will open a PR when a new release lands.
+
+**The SHA appears twice on purpose.** A reusable workflow cannot discover its own
+commit: `github.workflow_sha` and `github.workflow_ref` name the caller's workflow,
+`github.action_ref` is empty outside composite actions, and `github.job_workflow_sha`
+— which the docs describe as the commit SHA of the reusable workflow file — comes
+through empty, measured on this repo rather than assumed. So the ref you pin has to be
+handed in, and `gates_ref` is required rather than defaulted, because the only default
+available is a branch and that would make your pin cosmetic. Change both together; the
+workflow refuses anything that is not a 40-character SHA.
 
 The reusable workflow checks your repo out into `repo/`, this toolkit into a sibling
 `gates-toolkit/`, and runs `./gates-toolkit/selftest.sh repo`. Siblings, not nested: a
