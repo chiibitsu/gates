@@ -106,7 +106,15 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
   fi
 
   # ---- 2. the case leg ----
-  cases="$FX/$gate/cases"
+  #
+  # Cases live UNDER bad/, not beside it. Every gate that filters out this toolkit's own
+  # planted failures filters on the `fixtures/<gate>/bad/` prefix, including the versions
+  # already tagged and pinned — and .github/workflows/caller-smoke.yml runs a PINNED
+  # RELEASE of this toolkit over this tree, exactly as a consumer would. A `cases/` beside
+  # `bad/` was invisible to that release's filter, so adding the first one turned the
+  # consumer job red on a fixture. A layout only the working copy understands is a layout
+  # that breaks its own published versions.
+  cases="$FX/$gate/bad/cases"
   if [ -d "$cases" ]; then
     for c in "$cases"/*/; do
       [ -d "$c" ] || continue

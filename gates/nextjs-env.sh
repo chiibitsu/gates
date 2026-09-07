@@ -61,7 +61,7 @@ not_fixture() {
     case "$line" in "$prefix"*) rest="${line#"$prefix"}" ;; esac
     if [ -n "$rest" ]; then
       gate="${rest%%/*}"
-      case "${rest#"$gate"/}" in bad/*|cases/*) continue ;; esac
+      case "${rest#"$gate"/}" in bad/*) continue ;; esac
     fi
     printf '%s\n' "$line"
   done

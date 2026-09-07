@@ -37,9 +37,15 @@ and a check that quietly does nothing looks exactly like a check that passes.
 One bad fixture is one tree holding several violations, so it proves only that
 *something* in it still fails. A shape that stopped being detected hides behind the ones
 that still are. So each shape a review found the gate passing gets its own minimal tree
-under `fixtures/<name>/cases/`, and the selftest requires exit 1 from every one of them
-individually. Five of the seven cases in this repo were written after a reviewer found
-the gate walking past them.
+under `fixtures/<name>/bad/cases/`, and the selftest requires exit 1 from every one of
+them individually. Five of the seven cases in this repo were written after a reviewer
+found the gate walking past them.
+
+They sit *under* the bad fixture rather than beside it because every gate that filters
+out this toolkit's own planted failures filters on the `fixtures/<name>/bad/` prefix —
+including the versions already tagged, one of which this repo runs over itself as a
+consumer. A layout only the working copy understands is one that breaks its own
+published releases.
 
 The tree leg carries the other half. A gate that rejects a *valid* form cannot be planted
 in a fixture — the fixture model holds bad trees only — so a false red shows up only by
@@ -145,7 +151,7 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 3. Run `./selftest.sh`. It must report that the gate catches its fixture **and** passes
    this tree. Without the fixture the selftest fails, which is the point.
 4. Every time a review finds this gate passing something it should have caught, add that
-   one shape as `fixtures/<name>/cases/<shape>/` before the fix merges. The case has to
+   one shape as `fixtures/<name>/bad/cases/<shape>/` before the fix merges. The case has to
    fail on the old gate and pass on the new one, or it is not evidence of anything.
 
 ## Releases
