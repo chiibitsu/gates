@@ -60,7 +60,7 @@ the placeholder with a real toolkit commit SHA:
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@<40-char SHA>
+    uses: chiibitsu/gates/.github/workflows/gates.yml@186ff054aebc0b3f581ae079e6fad4035e36f2d0  # v1.0.0
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
