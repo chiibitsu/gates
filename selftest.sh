@@ -10,7 +10,14 @@
 #      A gate with no fixture fails this test. check_secrets.py's failure leg is its own
 #      --selftest instead: canary, fingerprint and negative-probe checks that assert the
 #      scanner still detects and still redacts.
-#   2. the TREE leg — run it against TARGET_TREE and require exit 0.
+#   2. the CASE leg — run it against every fixtures/<gate>/cases/<name> and require exit 1
+#      from each. The bad fixture is one tree holding many violations, so it proves only
+#      that SOMETHING in it fails; a shape that stopped being detected hides behind the
+#      others still failing. A case is one tree holding one shape, so it can only pass by
+#      that shape still being caught. Every false green a reviewer finds gets a case here.
+#   3. the TREE leg — run it against TARGET_TREE and require exit 0. A gate that rejects a
+#      VALID form shows up only on this leg: the fixture model holds bad trees, so a false
+#      RED cannot be planted in one.
 #
 # Why both directions, every run: 17 of the 51 sessions in the AI Improvements log are a
 # mechanism reporting success while doing nothing, and in 7 of those the thing that failed
@@ -98,7 +105,27 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
     fi
   fi
 
-  # ---- 2. the tree leg ----
+  # ---- 2. the case leg ----
+  cases="$FX/$gate/cases"
+  if [ -d "$cases" ]; then
+    for c in "$cases"/*/; do
+      [ -d "$c" ] || continue
+      cname="$(basename "$c")"
+      run_gate "$g" "${c%/}"
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        echo "SELFTEST FAIL: $gate PASSED case '$cname' — that shape is no longer detected"
+        sed 's/^/    /' "$OUT"; bad=1
+      elif [ "$rc" -ne 1 ]; then
+        echo "SELFTEST FAIL: $gate errored (exit $rc) on case '$cname' instead of reporting a violation"
+        sed 's/^/    /' "$OUT"; bad=1
+      else
+        echo "ok  $gate catches case '$cname'"
+      fi
+    done
+  fi
+
+  # ---- 3. the tree leg ----
   run_gate "$g" "$TARGET"
   rc=$?
   if [ "$rc" -ne 0 ]; then

@@ -1,0 +1,7 @@
+# A quoted key is the same key. Same miss as the spaced one.
+name: ci
+on: [push]
+jobs:
+  x:
+    steps:
+      - 'uses': actions/upload-artifact@main

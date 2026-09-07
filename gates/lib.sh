@@ -33,5 +33,9 @@ finish() {
   if [ "$FAILS" -eq 0 ]; then echo "ok [$GATE]"; exit 0; fi
   echo "$FAILS violation(s) [$GATE]"; exit 1
 }
-# grep over a tree, skipping build and dependency output
-tgrep() { grep -rEn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.next --exclude-dir=coverage "$@"; }
+# grep over a tree, skipping build and dependency output. The MATCHER is the caller's to
+# pass (-E, -F, ...). It used to be hardcoded to -E here, so a caller that added -F to search
+# for a literal term handed grep two matchers; grep answered "conflicting matchers specified"
+# and exited 2 on every such search, which made the per-repo denylist unusable in any repo
+# that had one. A helper that dictates the matcher is a helper that decides the search.
+tgrep() { grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.next --exclude-dir=coverage "$@"; }

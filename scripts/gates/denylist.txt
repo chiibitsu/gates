@@ -1,3 +1,13 @@
 # Terms that must never appear in this repo, one per line, case-insensitive. Typical use
-# in a client fork: other clients' names, their repo slugs, their owner handles. Empty
-# here on purpose — this repo is public and holds no client work. Comments allowed.
+# in a client fork: other clients' names, their repo slugs, their owner handles. Comments
+# allowed.
+#
+# This repo is public and holds no client work, so there is nothing real to list. The term
+# below is a CANARY and is here on purpose: it is a string that must never appear, and its
+# presence keeps the selftest's tree leg walking the denylist code path on every run.
+#
+# The file used to hold comments only. That made the denylist look exercised and left it
+# untested — `-F` was being passed on top of a hardcoded `-E`, grep rejected every denylist
+# search with "conflicting matchers specified", and no repo that actually had a denylist
+# could go green. An empty list is not a passing list; it is an unread one.
+gates-denylist-canary-must-never-appear

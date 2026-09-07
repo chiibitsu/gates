@@ -17,6 +17,24 @@ KEY="^[[:space:]]*-?[[:space:]]*['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
 # The same key, unanchored, for pulling the VALUE back out of a matched line.
 VALKEY="['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
 
+# The listing is captured to a file and grep's own status is checked BEFORE anything is
+# read from it. `done < <(grep ...)` discarded that status: an unreadable directory under
+# .github/workflows made grep print "Permission denied", exit 2, and feed the loop nothing —
+# so a workflow holding `uses: actions/checkout@v4` was never examined and the supply-chain
+# gate printed ok. Zero lines out of a failed search is not the same fact as zero violations.
+LIST="$(mktemp)"; ERR="$(mktemp)"
+trap 'rm -f "$LIST" "$ERR"' EXIT
+set +e
+grep -rEn "${KEY}" "$WF" --include='*.yml' --include='*.yaml' > "$LIST" 2> "$ERR"
+rc=$?
+set -e
+if [ "$rc" -gt 1 ]; then
+  fail "search failed (grep exit $rc) — a workflow this gate could not read is not a pinned one:"
+  # head first, then sed: `sed | head` leaves sed on the wrong end of a SIGPIPE and pipefail
+  # turns that into 141, which set -e reads as the gate itself failing.
+  head -5 "$ERR" | sed 's/^/    /'
+fi
+
 while IFS= read -r line; do
   # Everything the gate decides on comes from the VALUE, never from the whole line. Testing
   # the line for `docker://` sent `uses: actions/checkout@<sha> # docker://example` into the
@@ -26,7 +44,14 @@ while IFS= read -r line; do
   val="${val%%[[:space:]]*}"          # the value ends at the first space; an inline comment is past it
   val="${val#\"}"; val="${val#\'}"    # a quoted value is legal YAML
   val="${val%\"}"; val="${val%\'}"
-  [ -n "$val" ] || continue
+  if [ -z "$val" ]; then
+    # `uses:` with the value on the NEXT line is legal YAML and GitHub runs it. This gate
+    # reads one line at a time and cannot see that value, and it used to `continue` — so
+    # `uses:` / newline / `actions/checkout@v4` reported ok. It reports instead: a form the
+    # gate cannot evaluate is not a form the gate has cleared.
+    fail "$line (value is on a following line; this gate reads one line at a time — put the pinned value on the uses: line)"
+    continue
+  fi
   ref="${val##*@}"
   case "$val" in
     ./*)
@@ -48,5 +73,5 @@ while IFS= read -r line; do
       if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then fail "$line"; fi
       ;;
   esac
-done < <(grep -rEn "${KEY}" "$WF" --include='*.yml' --include='*.yaml')
+done < "$LIST"
 finish

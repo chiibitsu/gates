@@ -34,6 +34,18 @@ directions, every CI run. A gate with no fixture fails the selftest.**
 That is the whole design. A gate that has never been seen to fail is not known to work,
 and a check that quietly does nothing looks exactly like a check that passes.
 
+One bad fixture is one tree holding several violations, so it proves only that
+*something* in it still fails. A shape that stopped being detected hides behind the ones
+that still are. So each shape a review found the gate passing gets its own minimal tree
+under `fixtures/<name>/cases/`, and the selftest requires exit 1 from every one of them
+individually. Five of the seven cases in this repo were written after a reviewer found
+the gate walking past them.
+
+The tree leg carries the other half. A gate that rejects a *valid* form cannot be planted
+in a fixture — the fixture model holds bad trees only — so a false red shows up only by
+the real tree going red. That is why this repo's own denylist holds a canary term rather
+than nothing: an empty list looks exercised and is not.
+
 ## What is here
 
 | Gate | Checks |
@@ -132,12 +144,15 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 2. Plant `fixtures/<name>/bad/` — the smallest tree that trips it.
 3. Run `./selftest.sh`. It must report that the gate catches its fixture **and** passes
    this tree. Without the fixture the selftest fails, which is the point.
+4. Every time a review finds this gate passing something it should have caught, add that
+   one shape as `fixtures/<name>/cases/<shape>/` before the fix merges. The case has to
+   fail on the old gate and pass on the new one, or it is not evidence of anything.
 
 ## Releases
 
 | Version | Commit | Use it? |
 |---|---|---|
-| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point; the fix ships in the next release. |
+| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes ship in the next release. |
 | v1.0.0 | `39f78d6` | **No.** Four gates could pass a violation: migrations-lint read a commented-out `enable row level security` as evidence; actions-sha-pinned missed two legal YAML spellings of the `uses` key; required-files and nextjs-env skipped every git-backed check inside a linked worktree or submodule. It also deleted a `.gates-selftest` directory in the tree it was inspecting. The tag stays where it is — a published tag on a gate toolkit does not get moved — and this table is the record. |
 
 ## Known gaps
@@ -158,6 +173,13 @@ header, which is the honest account of what that scanner does not do.
 - **Non-UTF-8 history hunks.** UTF-16 and UTF-32 content forced through git's text diff
   driver is reported as NOT scanned rather than decoded. Working-tree files are still
   decoded properly.
+- **Some failure modes cannot be expressed as a fixture.** A gate now treats an errored
+  search as a violation rather than as "no matches", because an unreadable directory
+  under a workflows tree once made the pinning gate print ok over an unpinned action. No
+  committed tree can reproduce that: git does not store a mode-000 directory, and the
+  same tree behaves differently depending on which user CI runs as. The same holds for
+  the paths taken only when git itself fails. These fixes were verified by hand and are
+  the first items in the open issue on validating the parsers below the fixture level.
 - **This is not a defence against a hostile pull request.** On `pull_request` GitHub
   runs the workflow definition from the proposed tree, so a PR can replace the job body
   and keep the check name. What closes that is push protection and org-level required
