@@ -68,6 +68,28 @@ jobs:
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
 you. Renovate with digest pinning will open a PR when a new release lands.
 
+### Keeping the pin current
+
+Renovate's `github-actions` manager bumps the `uses:` line but does not know about
+`gates_ref`, so a bump would leave the pair mismatched — the workflow definition from
+one commit running the gate scripts from another. Bump both with a custom manager:
+
+```json
+{
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": ["gates_ref:\\s*(?<currentDigest>[0-9a-f]{40})"],
+      "depNameTemplate": "chiibitsu/gates",
+      "packageNameTemplate": "https://github.com/chiibitsu/gates",
+      "datasourceTemplate": "git-refs",
+      "currentValueTemplate": "main"
+    }
+  ]
+}
+```
+
 **The SHA appears twice on purpose.** A reusable workflow cannot discover its own
 commit: `github.workflow_sha` and `github.workflow_ref` name the caller's workflow,
 `github.action_ref` is empty outside composite actions, and `github.job_workflow_sha`
