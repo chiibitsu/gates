@@ -41,7 +41,9 @@ scan() { # "$@" = grep arguments, MATCHER INCLUDED (-E, -F, ...), before the roo
   # term. Wrong text under the right heading is still a wrong answer.
   : > "$WORK/hits"
   set +e
-  tgrep "${X[@]}" "$@" "$ROOT" > "$WORK/raw" 2> "$WORK/err"
+  # `--` before the path: every caller passes its pattern with -e, so nothing after this
+  # point can be mistaken for an option.
+  tgrep "${X[@]}" "$@" -- "$ROOT" > "$WORK/raw" 2> "$WORK/err"
   rc=$?
   set -e
   if [ "$rc" -gt 1 ]; then

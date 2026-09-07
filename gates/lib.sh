@@ -22,7 +22,11 @@ if [ ! -d "$ROOT" ]; then
 fi
 # Absolute and symlink-resolved, so the root-relative exclusions in the gates below
 # compare against the same spelling grep and find will print.
-ROOT="$(cd "$ROOT" && pwd -P)"
+# `cd --`, not `cd`. A root spelled `-root` is a legal relative directory name, and every
+# gate downstream hands $ROOT to grep or find as a trailing operand — where a leading dash
+# is read as an option, not a path. Making ROOT absolute here is what keeps those safe, so
+# this line has to survive a root that starts with one.
+ROOT="$(cd -- "$ROOT" && pwd -P)"
 # `.git` is a DIRECTORY only in a classic checkout. In a linked worktree or a submodule it
 # is a FILE, and a `[ -d "$ROOT/.git" ]` test therefore skipped every git-backed check and
 # reported ok over a tree it never asked git about. Ask git, don't guess from the layout.

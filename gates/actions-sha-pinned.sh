@@ -25,7 +25,8 @@ VALKEY="['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
 LIST="$(mktemp)"; ERR="$(mktemp)"
 trap 'rm -f "$LIST" "$ERR"' EXIT
 set +e
-grep -rEn "${KEY}" "$WF" --include='*.yml' --include='*.yaml' > "$LIST" 2> "$ERR"
+# -e for the pattern and -- before the path, so neither can be read as an option.
+grep -rEn --include='*.yml' --include='*.yaml' -e "$KEY" -- "$WF" > "$LIST" 2> "$ERR"
 rc=$?
 set -e
 if [ "$rc" -gt 1 ]; then
