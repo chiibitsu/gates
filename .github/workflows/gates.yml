@@ -33,8 +33,19 @@ jobs:
         id: toolkit
         env:
           SHA: ${{ github.job_workflow_sha }}
+          DBG_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          DBG_WORKFLOW_REF: ${{ github.workflow_ref }}
+          DBG_ACTION_REF: ${{ github.action_ref }}
+          DBG_SHA: ${{ github.sha }}
+          DBG_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          echo "job_workflow_sha=[$SHA]"
+          echo "workflow_sha=[$DBG_WORKFLOW_SHA]"
+          echo "workflow_ref=[$DBG_WORKFLOW_REF]"
+          echo "action_ref=[$DBG_ACTION_REF]"
+          echo "sha=[$DBG_SHA]"
+          echo "ref=[$DBG_REF]"
           if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "::error::could not resolve the chiibitsu/gates commit for this run."
             echo "Refusing to check out an unpinned toolkit."
