@@ -26,10 +26,16 @@
 # templates/tier1-ci.yml.
 set -uo pipefail
 
-HERE="$(cd "$(dirname "$0")" && pwd -P)"
+HERE="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 TARGET="${1:-$HERE}"
 [ -d "$TARGET" ] || { echo "selftest: target tree does not exist: $TARGET"; exit 2; }
-TARGET="$(cd "$TARGET" && pwd -P)"
+# `cd --`, and the result is checked. A target spelled `-tgt` is a legal directory name;
+# without the `--` bash read the `-t` as an option, the cd failed, TARGET became EMPTY, and
+# every gate was then run against nothing and reported as failing a tree the harness never
+# looked at. This is the same defect the gates themselves carried, in the thing that checks
+# them — so it could have reported all of them broken while checking none.
+TARGET="$(cd -- "$TARGET" && pwd -P)" || { echo "selftest: cannot enter target tree: $TARGET"; exit 2; }
+[ -n "$TARGET" ] || { echo "selftest: target tree resolved to nothing"; exit 2; }
 FX="$HERE/fixtures"
 OUT="$(mktemp)"
 bad=0

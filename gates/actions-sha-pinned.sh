@@ -13,7 +13,10 @@ WF="$ROOT/.github/workflows"
 # through the pinning gate under a legal spelling. This is still a grep and not a YAML
 # parser; what changed is that it errs toward matching more keys, and every extra match
 # costs at most a false red on a line someone can look at.
-KEY="^[[:space:]]*-?[[:space:]]*['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
+# The leading class also allows `{` and `,`, because `- {uses: actions/checkout@v4}` is a
+# YAML flow mapping, GitHub runs it, and an anchor that only tolerated `-` and quotes read
+# past it — a mutable tag through the pinning gate on a legal spelling, for the fourth time.
+KEY="^[[:space:]]*[-{,[:space:]]*['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
 # The same key, unanchored, for pulling the VALUE back out of a matched line.
 VALKEY="['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
 
@@ -43,6 +46,7 @@ while IFS= read -r line; do
   # awk's match() is leftmost, so a second `uses:` later in a comment cannot win.
   val="$(printf '%s' "$line" | awk -v re="$VALKEY" '{ if (match($0, re)) print substr($0, RSTART + RLENGTH) }')"
   val="${val%%[[:space:]]*}"          # the value ends at the first space; an inline comment is past it
+  val="${val%%,*}"; val="${val%%\}*}" # ...or at the , or } that closes it inside a flow mapping
   val="${val#\"}"; val="${val#\'}"    # a quoted value is legal YAML
   val="${val%\"}"; val="${val%\'}"
   if [ -z "$val" ]; then

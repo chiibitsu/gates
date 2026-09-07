@@ -1,0 +1,4 @@
+# An apostrophe in a path. `echo | xargs` exited non-zero on it and took the gate with it,
+# so nothing below this line was ever checked. Both entries must be reported now.
+it's-not-here.md
+also-not-here.md

@@ -31,6 +31,26 @@ ROOT="$(cd -- "$ROOT" && pwd -P)"
 # is a FILE, and a `[ -d "$ROOT/.git" ]` test therefore skipped every git-backed check and
 # reported ok over a tree it never asked git about. Ask git, don't guess from the layout.
 in_git_repo() { git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
+# One line of a per-repo config list — a denylist term, a required-files path — with its
+# trailing comment removed, surrounding whitespace trimmed, and a matched pair of wrapping
+# quotes unwrapped.
+#
+# This was `echo "$line" | xargs` in two gates. xargs PARSES quotes: one apostrophe in a
+# manifest and it exits non-zero, which inside a command substitution under `set -e` ends
+# the gate on the spot — every entry after that line unchecked and `finish` never reached.
+# It is also the only reason quoted entries ever worked, so the unwrapping is explicit here
+# rather than a side effect of a tool being used for the wrong job. Shared, so the two gates
+# cannot drift apart on what a config line means.
+clean_list_line() {
+  local t="${1%%#*}"
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  case "$t" in
+    \'*\') t="${t#\'}"; t="${t%\'}" ;;
+    '"'*'"') t="${t#\"}"; t="${t%\"}" ;;
+  esac
+  printf '%s' "$t"
+}
 FAILS=0
 fail() { echo "FAIL [$GATE] $*"; FAILS=$((FAILS+1)); }
 finish() {

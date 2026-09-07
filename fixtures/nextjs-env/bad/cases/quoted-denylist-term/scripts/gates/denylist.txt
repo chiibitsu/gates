@@ -1,0 +1,4 @@
+# A term someone quoted because it has a space in it. The quotes used to be searched for
+# literally — the term matched nothing, silently, while unquoted terms on the same list
+# fired normally. Quoting a value is not a way to switch a check off.
+'Northwind Trading'

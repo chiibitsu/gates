@@ -38,8 +38,8 @@ One bad fixture is one tree holding several violations, so it proves only that
 *something* in it still fails. A shape that stopped being detected hides behind the ones
 that still are. So each shape a review found the gate passing gets its own minimal tree
 under `fixtures/<name>/bad/cases/`, and the selftest requires exit 1 from every one of
-them individually. Five of the seven cases in this repo were written after a reviewer
-found the gate walking past them.
+them individually. Most of the ten cases in this repo were written after a reviewer found
+the gate walking past that exact shape.
 
 They sit *under* the bad fixture rather than beside it because every gate that filters
 out this toolkit's own planted failures filters on the `fixtures/<name>/bad/` prefix —
@@ -179,6 +179,11 @@ header, which is the honest account of what that scanner does not do.
 - **Non-UTF-8 history hunks.** UTF-16 and UTF-32 content forced through git's text diff
   driver is reported as NOT scanned rather than decoded. Working-tree files are still
   decoded properly.
+- **A case proves detection by exit code, not by what the gate said.** The selftest asserts
+  exit 1 from each case, so a defect that keeps the verdict and corrupts the report — a
+  gate that stops halfway through its list and still exits 1, or one that prints the wrong
+  evidence under the right heading — passes the case leg. Both have happened here. Checking
+  stdout is part of the open issue on validating below the fixture level.
 - **Some failure modes cannot be expressed as a fixture.** A gate now treats an errored
   search as a violation rather than as "no matches", because an unreadable directory
   under a workflows tree once made the pinning gate print ok over an unpinned action. No

@@ -6,8 +6,13 @@
 source "$(dirname "$0")/lib.sh"
 LIST="$ROOT/scripts/gates/required-files.txt"
 [ -f "$LIST" ] || { fail "missing manifest scripts/gates/required-files.txt"; finish; }
-while IFS= read -r p; do
-  p="${p%%#*}"; p="$(echo "$p" | xargs)"; [ -z "$p" ] && continue
+# `|| [ -n "$p" ]` so a last line with no trailing newline is still read.
+while IFS= read -r p || [ -n "$p" ]; do
+  # clean_list_line, not `echo | xargs`. xargs parses quotes, so a single apostrophe in a
+  # path ended the gate mid-manifest under `set -e` — with every entry after it unchecked
+  # and `finish` never reached, which is a check that stopped early wearing a normal exit.
+  p="$(clean_list_line "$p")"
+  if [ -z "$p" ]; then continue; fi
   if [ ! -e "$ROOT/$p" ]; then fail "missing: $p"; continue; fi
   if [ -f "$ROOT/$p" ] && in_git_repo "$ROOT"; then
     git -C "$ROOT" ls-files --error-unmatch "$p" >/dev/null 2>&1 || fail "untracked: $p"

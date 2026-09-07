@@ -69,16 +69,6 @@ not_fixture() {
   done
 }
 
-# Strip a trailing comment and the whitespace around what is left, in the shell. `xargs` was
-# doing this, and `xargs` parses quotes: a denylist line holding an apostrophe made it exit
-# non-zero inside a command substitution, which under `set -e` killed the gate.
-clean_term() {
-  local t="${1%%#*}"
-  t="${t#"${t%%[![:space:]]*}"}"
-  t="${t%"${t##*[![:space:]]}"}"
-  printf '%s' "$t"
-}
-
 # 1. A server-only key exposed to the browser bundle via the NEXT_PUBLIC_ prefix. Names,
 #    deliberately: the mistake this catches IS a naming mistake.
 scan -E --exclude=AGENTS.md --exclude-dir=docs --exclude-dir=product \
@@ -127,7 +117,11 @@ DL="$ROOT/scripts/gates/denylist.txt"
 if [ -f "$DL" ]; then
   # `|| [ -n "$term" ]` so a last line with no trailing newline is still read.
   while IFS= read -r term || [ -n "$term" ]; do
-    term="$(clean_term "$term")"
+    # clean_list_line, from lib.sh, shared with required-files.sh. It also unwraps a matched
+    # pair of quotes: `'Acme Corp'` used to be searched WITH its quotes and matched nothing,
+    # so a term someone quoted for the spaces in it was silently never looked for, while the
+    # unquoted terms on the same list fired normally.
+    term="$(clean_list_line "$term")"
     if [ -z "$term" ]; then continue; fi
     # -F, and the matcher is passed here rather than baked into tgrep. A denylisted term is
     # a literal — a client name with a `.` or a `+` in it is not a regex — and the previous
