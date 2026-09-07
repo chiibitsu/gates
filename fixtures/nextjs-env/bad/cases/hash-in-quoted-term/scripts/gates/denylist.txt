@@ -1,0 +1,4 @@
+# A quoted term containing a hash. The comment stripper ran before the quotes were read, so
+# this was cut back to 'C and matched nothing — quoting a value is what you do BECAUSE it
+# holds a space or a hash, and it must not be a way to switch the check off.
+'C# Consulting'

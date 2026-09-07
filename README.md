@@ -38,8 +38,8 @@ One bad fixture is one tree holding several violations, so it proves only that
 *something* in it still fails. A shape that stopped being detected hides behind the ones
 that still are. So each shape a review found the gate passing gets its own minimal tree
 under `fixtures/<name>/bad/cases/`, and the selftest requires exit 1 from every one of
-them individually. Most of the ten cases in this repo were written after a reviewer found
-the gate walking past that exact shape.
+them individually. Every one of the fourteen cases in this repo was written after a
+reviewer found the gate walking past that exact shape.
 
 They sit *under* the bad fixture rather than beside it because every gate that filters
 out this toolkit's own planted failures filters on the `fixtures/<name>/bad/` prefix —

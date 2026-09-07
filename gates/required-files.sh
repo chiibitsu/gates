@@ -15,7 +15,10 @@ while IFS= read -r p || [ -n "$p" ]; do
   if [ -z "$p" ]; then continue; fi
   if [ ! -e "$ROOT/$p" ]; then fail "missing: $p"; continue; fi
   if [ -f "$ROOT/$p" ] && in_git_repo "$ROOT"; then
-    git -C "$ROOT" ls-files --error-unmatch "$p" >/dev/null 2>&1 || fail "untracked: $p"
+    # `--` before the path. A tracked file named `-dash.md` was handed to git as an option,
+    # ls-files errored, and the gate reported it untracked — a manifest entry that cannot be
+    # spelled without tripping the check that reads it.
+    git -C "$ROOT" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 || fail "untracked: $p"
   fi
 done < "$LIST"
 finish

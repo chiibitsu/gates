@@ -42,13 +42,23 @@ in_git_repo() { git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 # rather than a side effect of a tool being used for the wrong job. Shared, so the two gates
 # cannot drift apart on what a config line means.
 clean_list_line() {
-  local t="${1%%#*}"
+  local t="$1" q rest
   t="${t#"${t%%[![:space:]]*}"}"
-  t="${t%"${t##*[![:space:]]}"}"
+  # A QUOTED entry is read to its closing quote and taken verbatim. Comment stripping used to
+  # run first, so a term like 'C# Consulting' was cut back to 'C and matched nothing — and
+  # quoting is exactly what someone does BECAUSE the value holds a space or a hash, so doing
+  # it must not disarm the check. An unbalanced quote falls through to the ordinary path
+  # rather than swallowing the line.
   case "$t" in
-    \'*\') t="${t#\'}"; t="${t%\'}" ;;
-    '"'*'"') t="${t#\"}"; t="${t%\"}" ;;
+    \'*|\"*)
+      q="${t:0:1}"; rest="${t:1}"
+      case "$rest" in
+        *"$q"*) printf '%s' "${rest%%"$q"*}"; return 0 ;;
+      esac
+      ;;
   esac
+  t="${t%%#*}"
+  t="${t%"${t##*[![:space:]]}"}"
   printf '%s' "$t"
 }
 FAILS=0

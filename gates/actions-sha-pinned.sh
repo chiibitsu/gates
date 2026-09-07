@@ -7,76 +7,101 @@ source "$(dirname "$0")/lib.sh"
 WF="$ROOT/.github/workflows"
 [ -d "$WF" ] || { echo "ok [$GATE] no workflows"; exit 0; }
 
-# The KEY is matched as YAML spells it, not as it is usually typed. `uses : x` and
-# `'uses': x` are both valid mappings that GitHub reads as an ordinary `uses` field, and a
-# pattern anchored on the literal token `uses:` found neither — so a mutable tag walked
-# through the pinning gate under a legal spelling. This is still a grep and not a YAML
-# parser; what changed is that it errs toward matching more keys, and every extra match
-# costs at most a false red on a line someone can look at.
-# The leading class also allows `{` and `,`, because `- {uses: actions/checkout@v4}` is a
-# YAML flow mapping, GitHub runs it, and an anchor that only tolerated `-` and quotes read
-# past it — a mutable tag through the pinning gate on a legal spelling, for the fourth time.
-KEY="^[[:space:]]*[-{,[:space:]]*['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
-# The same key, unanchored, for pulling the VALUE back out of a matched line.
-VALKEY="['\"]?uses['\"]?[[:space:]]*:[[:space:]]*"
+# EXTRACTION IS ONE PASS, IN awk, AND IT IS THE ONLY PLACE TEXT IS INTERPRETED.
+#
+# This gate has now produced five defects, every one of them the same mistake: a regex that
+# recognised the spellings of `uses` somebody had thought of, and read straight past the
+# rest. In order — the token-anchored `uses:` missed `uses :` and `'uses':`; a line-level
+# test for `./` dropped a mutable tag because a COMMENT mentioned a local action; a
+# line-level test for `docker://` rejected a correctly pinned action for the same reason; a
+# value continued on the next line was skipped in silence; and a flow mapping, `- {uses: x}`,
+# was not matched at all — then matched only when `uses` was its FIRST key.
+#
+# Patching the anchor once more would have been the sixth patch on one confusion. So the
+# reading is consolidated: strip the comment, then find EVERY `uses` key on what is left and
+# emit its value. Decisions below run on values, and a comment cannot reach them.
+#
+# It is still not a YAML parser and it does not pretend to be. What it is, is one place to
+# be wrong instead of five.
+read -r -d '' AWK_EXTRACT <<'AWK' || true
+{
+  line = $0
 
-# The listing is captured to a file and grep's own status is checked BEFORE anything is
-# read from it. `done < <(grep ...)` discarded that status: an unreadable directory under
-# .github/workflows made grep print "Permission denied", exit 2, and feed the loop nothing —
-# so a workflow holding `uses: actions/checkout@v4` was never examined and the supply-chain
-# gate printed ok. Zero lines out of a failed search is not the same fact as zero violations.
-LIST="$(mktemp)"; ERR="$(mktemp)"
-trap 'rm -f "$LIST" "$ERR"' EXIT
+  # Drop a trailing comment: the first # that starts the line or follows whitespace. A # is
+  # only a comment in YAML in those positions, and no action reference contains one.
+  code = line
+  n = length(code)
+  for (i = 1; i <= n; i++) {
+    c = substr(code, i, 1)
+    if (c == "#" && (i == 1 || substr(code, i - 1, 1) ~ /[ \t]/)) {
+      code = substr(code, 1, i - 1)
+      break
+    }
+  }
+
+  # Every `uses` key on the line, not just the first. `steps: [{uses: a}, {uses: b}]` is one
+  # line holding two steps, and stopping at the first left the second unchecked.
+  rest = code
+  while (match(rest, /(^|[ \t{,[])["']?uses["']?[ \t]*:[ \t]*/)) {
+    val = substr(rest, RSTART + RLENGTH)
+    rest = val
+
+    # The value ends at the first thing that cannot be part of an action reference.
+    if (match(val, /[ \t,}\]]/)) val = substr(val, 1, RSTART - 1)
+    gsub(/^["']|["']$/, "", val)
+
+    printf "%s\t%s\t%s\t%s\n", FILENAME, FNR, val, line
+  }
+}
+AWK
+
+FILES="$(mktemp)"; ERR="$(mktemp)"
+trap 'rm -f "$FILES" "$ERR"' EXIT
+
+# find's status is checked before anything is read from its output. A directory this gate
+# could not descend into is not a directory whose actions are pinned, and the previous
+# version fed an unreadable tree's zero lines straight into the loop and printed ok.
 set +e
-# -e for the pattern and -- before the path, so neither can be read as an option.
-grep -rEn --include='*.yml' --include='*.yaml' -e "$KEY" -- "$WF" > "$LIST" 2> "$ERR"
+find "$WF" -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 > "$FILES" 2> "$ERR"
 rc=$?
 set -e
-if [ "$rc" -gt 1 ]; then
-  fail "search failed (grep exit $rc) — a workflow this gate could not read is not a pinned one:"
-  # head first, then sed: `sed | head` leaves sed on the wrong end of a SIGPIPE and pipefail
+if [ "$rc" -ne 0 ]; then
+  fail "could not list workflow files (find exit $rc) — a workflow this gate cannot read is not a pinned one:"
+  # head first, then sed: `sed | head` leaves sed on the wrong end of a SIGPIPE, and pipefail
   # turns that into 141, which set -e reads as the gate itself failing.
   head -5 "$ERR" | sed 's/^/    /'
 fi
 
-while IFS= read -r line; do
-  # Everything the gate decides on comes from the VALUE, never from the whole line. Testing
-  # the line for `docker://` sent `uses: actions/checkout@<sha> # docker://example` into the
-  # container branch and rejected a correctly pinned action — a comment is not a value.
-  # awk's match() is leftmost, so a second `uses:` later in a comment cannot win.
-  val="$(printf '%s' "$line" | awk -v re="$VALKEY" '{ if (match($0, re)) print substr($0, RSTART + RLENGTH) }')"
-  val="${val%%[[:space:]]*}"          # the value ends at the first space; an inline comment is past it
-  val="${val%%,*}"; val="${val%%\}*}" # ...or at the , or } that closes it inside a flow mapping
-  val="${val#\"}"; val="${val#\'}"    # a quoted value is legal YAML
-  val="${val%\"}"; val="${val%\'}"
-  if [ -z "$val" ]; then
-    # `uses:` with the value on the NEXT line is legal YAML and GitHub runs it. This gate
-    # reads one line at a time and cannot see that value, and it used to `continue` — so
-    # `uses:` / newline / `actions/checkout@v4` reported ok. It reports instead: a form the
-    # gate cannot evaluate is not a form the gate has cleared.
-    fail "$line (value is on a following line; this gate reads one line at a time — put the pinned value on the uses: line)"
-    continue
-  fi
-  ref="${val##*@}"
-  case "$val" in
-    ./*)
-      # A local action lives in this repo and has no ref to pin. Decided from the VALUE:
-      # the old line-level `grep -v` matched `./` ANYWHERE on the line, so
-      # `uses: actions/checkout@v4 # note uses: ./local-action` was dropped before the gate
-      # looked at it and a mutable tag walked through the supply-chain check. A comment is
-      # not a value — third time that exact confusion produced a defect in this file.
+if [ -s "$FILES" ]; then
+  # -print0 and mapfile -d '', so a workflow path holding a space or a newline is one path.
+  # $(cat) would have split it into several that do not exist, and awk would have been asked
+  # about files that are not there instead of the file that is.
+  mapfile -d '' -t WFILES < "$FILES"
+  while IFS="$(printf '\t')" read -r file lineno val line; do
+    if [ -z "$val" ]; then
+      # `uses:` with its value on the NEXT line is legal YAML and GitHub runs it. This gate
+      # reads one line at a time and cannot see that value; it used to skip the step, which
+      # is a pass. A form the gate cannot evaluate is not a form it has cleared.
+      fail "$file:$lineno:$line (value is on a following line; put the pinned value on the uses: line)"
       continue
-      ;;
-    docker://*)
-      # Container actions are pinned by IMAGE DIGEST, not by a git commit. Demanding 40 hex
-      # of `docker://image@sha256:<64 hex>` failed the strongest pin available for that form.
-      if ! [[ "$ref" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-        fail "$line (container action: pin by @sha256:<digest>)"
-      fi
-      ;;
-    *)
-      if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then fail "$line"; fi
-      ;;
-  esac
-done < "$LIST"
+    fi
+    ref="${val##*@}"
+    case "$val" in
+      ./*)
+        # A local action lives in this repo and has no ref to pin.
+        continue
+        ;;
+      docker://*)
+        # Container actions are pinned by IMAGE DIGEST, not by a git commit. Demanding 40 hex
+        # of `docker://image@sha256:<64 hex>` rejected the strongest pin that form has.
+        if ! [[ "$ref" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          fail "$file:$lineno:$line (container action: pin by @sha256:<digest>)"
+        fi
+        ;;
+      *)
+        if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then fail "$file:$lineno:$line"; fi
+        ;;
+    esac
+  done < <(awk "$AWK_EXTRACT" "${WFILES[@]}")
+fi
 finish
