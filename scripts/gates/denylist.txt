@@ -1,0 +1,3 @@
+# Terms that must never appear in this repo, one per line, case-insensitive. Typical use
+# in a client fork: other clients' names, their repo slugs, their owner handles. Empty
+# here on purpose — this repo is public and holds no client work. Comments allowed.

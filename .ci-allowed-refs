@@ -1,0 +1,22 @@
+# Reference-check exceptions for check_references.py. Two sections, different meanings.
+# Section 1 is permanent. Section 2, after the `#!debt` marker, is promised-but-unbuilt
+# and the checker fails the run once such a path starts existing, so the entry gets
+# removed rather than outliving its reason.
+
+# ── 1. Permanent ──────────────────────────────────────────────────────────────
+# Owned by chiibitsu/vibeOS, not by this repo. README.md credits it as the source of
+# the rule this toolkit is built on, and of the two vendored Python gates.
+templates/tier1-ci.yml
+scripts/check_secrets.py
+scripts/check_references.py
+
+# Cited ONLY by fixtures/check_references/bad/README.md, which is a planted failure
+# whose entire purpose is to be a broken citation. Allowed here so check_references.py
+# can pass this repo's own tree; NOT allowed inside the fixture, which has no allowlist
+# of its own, which is where the gate is required to go red. If this entry were the
+# fixture's own it would be a silencer — at the fixture's root it is absent by design.
+docs/a-path-that-does-not-exist.md
+
+#!debt
+# ── 2. Promised and not built yet ─────────────────────────────────────────────
+# (empty)

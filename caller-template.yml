@@ -1,0 +1,6 @@
+# Part of chiibitsu/gates by Angeline S. Viray (Chiibitsu Labs). MIT. https://github.com/chiibitsu/gates
+# Copy this to .github/workflows/gates.yml in your repo and pin the SHA.
+on: [pull_request, push]
+jobs:
+  gates:
+    uses: chiibitsu/gates/.github/workflows/gates.yml@GATES_SHA_PLACEHOLDER

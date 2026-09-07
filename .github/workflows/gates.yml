@@ -1,0 +1,71 @@
+name: gates
+# REUSABLE workflow. A consumer repo calls it with a five-line caller file; see
+# caller-template.yml at the root of this repo.
+#
+# One job, one substantive step: selftest.sh runs every gate against its own known-bad
+# fixture first (each must exit non-zero) and only then against the caller's tree (each
+# must exit zero). Proving the gate can fail is not a separate CI job that someone can
+# forget to require — it is the same command, every run.
+#
+# Every third-party action is pinned to a 40-character commit SHA, never a tag. A tag is
+# mutable: whoever owns the action can repoint it, and it runs with access to the source
+# and whatever secrets the job holds.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: Deterministic gates
+    runs-on: ubuntu-latest
+    steps:
+      # The toolkit commit is the one the CALLER pinned in its `uses:` line.
+      # github.job_workflow_sha is the only context value that carries it;
+      # github.action_ref is for composite actions and is empty here, and
+      # github.workflow_sha is the caller's own workflow file. Resolved in its own step
+      # and checked, because an empty ref makes actions/checkout fall back to the
+      # toolkit's default branch — a consumer who pinned a SHA would then silently run
+      # whatever HEAD happens to be, which is the supply-chain hole the SHA pin exists
+      # to close.
+      - name: Resolve the pinned toolkit commit
+        id: toolkit
+        env:
+          SHA: ${{ github.job_workflow_sha }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::could not resolve the chiibitsu/gates commit for this run."
+            echo "Refusing to check out an unpinned toolkit."
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      # The caller goes in a SUBDIRECTORY, and this toolkit goes in a sibling one.
+      # Checking the toolkit out inside the caller's tree would put this repo's own
+      # fixtures and documentation into the tree the gates then inspect: the planted
+      # NEXT_PUBLIC_ fixture would trip nextjs-env on every consumer, and the paths
+      # README.md cites here do not exist over there, so check_references would go red
+      # on documentation that belongs to neither repo. Siblings, not nested.
+      - name: Checkout the calling repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # fetch-depth: 0 — the credential scanner walks history, and a shallow clone
+          # cannot.
+          fetch-depth: 0
+          # lfs: true — without it an LFS-tracked file is checked out as a small pointer
+          # and its patch contains only that pointer, so a credential inside an LFS
+          # object scans clean while collaborators can still fetch it.
+          lfs: true
+          path: repo
+
+      - name: Checkout the gate toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: chiibitsu/gates
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: gates-toolkit
+
+      - name: Prove every gate can fail, then run it on this tree
+        run: ./gates-toolkit/selftest.sh "$GITHUB_WORKSPACE/repo"
