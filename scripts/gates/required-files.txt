@@ -10,7 +10,6 @@ caller-template.yml
 .ci-allowed-refs
 .github/workflows/gates.yml
 .github/workflows/selftest.yml
-.github/workflows/caller-smoke.yml
 gates/lib.sh
 gates/actions-sha-pinned.sh
 gates/migrations-lint.sh
