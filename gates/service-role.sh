@@ -490,10 +490,25 @@ $BASE_DIR/$t"
       # under BASE_DIR, and if nothing is there the specifier really is a package (rc 1, not a
       # red). Only when an explicit baseUrl was declared — without one there is no such shape
       # to resolve, and every bare specifier is a dependency exactly as before.
-      if [ "$matched" -ne 1 ] && [ "$BASEURL_SET" = 1 ] && is_package_specifier "$spec"; then
-        matched=1; fallback=1
-        bases="$BASE_DIR/$spec"
-      fi
+      # NOT GATED ON THE NAME LOOKING LIKE A PACKAGE. It was, and that made the probe skip
+      # exactly the specifiers most likely to be baseUrl-relative: `_components/Button` — a
+      # leading underscore is not a valid npm name, and underscore-prefixed private folders
+      # are an ordinary Next.js convention — resolved to a real file under BASE_DIR and was
+      # reported UNKNOWN anyway. A probe that refuses to look at a path because the path is
+      # not a package name is answering a different question from the one it was asked.
+      #
+      # `#`-prefixed specifiers are the exception and stay out: TypeScript and Node resolve
+      # those through package.json `imports`, not by appending them to baseUrl, so probing
+      # BASE_DIR for one would be a guess dressed as a resolution.
+      case "$spec" in
+        '#'*) : ;;
+        *)
+          if [ "$matched" -ne 1 ] && [ "$BASEURL_SET" = 1 ]; then
+            matched=1; fallback=1
+            bases="$BASE_DIR/$spec"
+          fi
+          ;;
+      esac
       ;;
   esac
   if [ "$matched" -ne 1 ]; then
@@ -584,10 +599,15 @@ ${b%.js}.d.ts" ;;
     if [ -n "$found" ]; then break; fi
   done <<< "$bases"
   if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
-  # A baseUrl probe that found nothing is not a failure to resolve a local module — it is
-  # TypeScript's own fallthrough to node_modules. Reporting UNKNOWN here would turn every
-  # `import React from "react"` red in any repo that declares a baseUrl.
-  if [ "$fallback" = 1 ]; then return 1; fi
+  # A baseUrl probe that found nothing is TypeScript's own fallthrough to node_modules — but
+  # only for a name that could BE a package. Reporting UNKNOWN for every miss would turn
+  # `import React from "react"` red in any repo declaring a baseUrl; calling every miss a
+  # package would silently skip `_components/Button` when that file is simply absent. So the
+  # claim is tested here, exactly as it is for a specifier that never reached the probe.
+  if [ "$fallback" = 1 ]; then
+    if is_package_specifier "$spec"; then return 1; fi
+    return 3
+  fi
   return 2
 }
 

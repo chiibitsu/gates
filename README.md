@@ -144,8 +144,14 @@ hesitation while a placeholder cannot be. `caller-template.yml` ships a real SHA
 to run; this prose does not.
 
 Copy `caller-template.yml` into your repo as `.github/workflows/gates.yml`. It ships a real
-SHA rather than a placeholder, and that SHA is the **previous** release — replace both
-occurrences with the one you want from the Releases table below:
+SHA rather than a placeholder, and that SHA is the **previous** release. Replace **all three**
+occurrences with the one you want from the Releases table below — the `gates:` `uses:` ref,
+the `gates_ref:` under it, and the `review:` `uses:` ref. The first two must stay identical to
+each other: a reusable workflow cannot discover its own commit, so the ref it runs from has to
+be handed to it, and a mismatch runs one release's workflow over another release's gates. This
+sentence said "both occurrences" over a snippet containing three, which is a count narrower
+than the thing it describes — the defect this repository exists to catch, in its own
+instructions.
 
 ```yaml
 on: [pull_request, push]
