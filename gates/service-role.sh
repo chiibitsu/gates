@@ -128,6 +128,12 @@ if [ -f "$TSCONFIG" ]; then
   grep -oE '"[^"]+"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]+"' "$WORK/pathsbody" 2>/dev/null \
     | sed -E 's/"([^"]+)"[[:space:]]*:[[:space:]]*\[[[:space:]]*"([^"]+)"/\1\t\2/' > "$ALIASES" 2>/dev/null || true
 
+  # `extends` is not followed. A base config holding the aliases leaves $ALIASES empty, and an
+  # `@/lib/secret` then matches no alias, is called a published package, and is skipped — a
+  # false green. Following the chain is a real change; saying so is not.
+  if grep -q '"extends"' "$TSCONFIG" 2>/dev/null && [ ! -s "$ALIASES" ]; then
+    unknown "tsconfig.json uses \"extends\" and no alias was parsed from this file — the base config is not followed, so an aliased import here would be mistaken for a published package"
+  fi
   if [ -s "$WORK/pathsbody" ] && [ ! -s "$ALIASES" ]; then
     unknown "tsconfig.json declares compilerOptions.paths but this gate parsed no alias out of it — every aliased import below is therefore unresolved, and none of them will be called clean"
   fi
@@ -226,7 +232,7 @@ done < "$SEEDS"
 # this repo's source" — and it is only safe to make about a specifier that matches NO
 # declared alias. Anything that looks local and does not resolve is 2, never 1.
 resolve() { # $1 = specifier, $2 = importing file
-  local spec="$1" bases="" matched=0 key target prefix t b ext cand found=""
+  local spec="$1" bases="" matched=0 key target prefix t b ext cand cdir found=""
   case "$spec" in
     ./*|../*) bases="$(dirname -- "$2")/$spec"; matched=1 ;;
     /*)       bases="$ROOT$spec"; matched=1 ;;
@@ -260,9 +266,33 @@ $BASE_DIR/$t"
   if [ "$matched" -ne 1 ]; then return 1; fi
   while IFS= read -r b; do
     [ -n "$b" ] || continue
-    for ext in "" .ts .tsx .js .jsx .mjs .cjs /index.ts /index.tsx /index.js /index.jsx; do
+    # .d.ts and friends included: `import type { Database } from "@/types/supabase"` against a
+    # src/types/supabase.d.ts resolved to nothing, which this gate calls UNKNOWN — a permanent
+    # blocking red on a perfectly ordinary line. The selftest cannot catch a false red (its own
+    # note says the fixture model holds bad trees only), so it is fixed here on report.
+    for ext in "" .ts .tsx .d.ts .mts .cts .js .jsx .mjs .cjs /index.ts /index.tsx /index.d.ts /index.js /index.jsx; do
       cand="$b$ext"
-      if [ -f "$cand" ]; then found="$cand"; break; fi
+      # CANONICALISED, not merely tested for existence. Without this the resolved path keeps
+      # whatever `..` the importer's specifier put in it, and TWO SPELLINGS OF ONE FILE ARE
+      # TWO NODES. That cost two defects, both shipped in v1.1.0:
+      #
+      #   - a file imported as `@/lib/x` from one module and `../../lib/x` from another was
+      #     counted twice: two findings for one file, each claiming "1 request-path
+      #     module(s)". That is the very miscount the note above says the edge-list rewrite
+      #     fixed. The rewrite fixed seed-carrying. It did not fix this, so the note claimed
+      #     more than the fix delivered — in the comment about that exact defect.
+      #   - an ordinary circular import (a.ts <-> b.ts) grew a longer spelling every hop, so
+      #     the SEEN set never matched and the walk did not terminate. Measured at 20s with
+      #     ZERO output before a timeout killed it. In CI that is a hang, not a red, and a
+      #     hang is the one outcome that reports nothing at all.
+      #
+      # `cd` + `pwd -P` resolves `..` and symlinks both, and only works on a path that
+      # exists — which is why it runs after the -f test rather than as a string rewrite.
+      if [ -f "$cand" ]; then
+        cdir="$(cd -- "$(dirname -- "$cand")" 2>/dev/null && pwd -P)" || continue
+        found="$cdir/$(basename -- "$cand")"
+        break
+      fi
     done
     if [ -n "$found" ]; then break; fi
   done <<< "$bases"
@@ -290,14 +320,49 @@ while :; do
   file="$(sed -n "${n}p" "$QUEUE")"
   [ -z "$file" ] && break
 
+  # SCANNED WITH NEWLINES COLLAPSED, because a line-at-a-time grep does not see a statement
+  # that spans lines — and the statement most likely to span lines is the one this gate must
+  # not miss. Shipped in v1.1.0, measured:
+  #
+  #     const mod = await import(
+  #       process.env.MODULE_NAME ?? "@/lib/secret"
+  #     );
+  #
+  # produced `ok [service-role]`, exit 0, over a page that reaches SUPABASE_SERVICE_ROLE_KEY.
+  # The guard did not fire because `import(` and the non-literal argument were on different
+  # lines, and the extractor did not follow it for the same reason. A FALSE GREEN in the
+  # security gate, from a formatting choice Prettier makes on its own.
+  #
+  # The cost of flattening: a `//` comment now runs into the code after it, so a mention of
+  # `import(` inside a comment can raise a spurious UNKNOWN. That is over-inclusive — a false
+  # RED, visible and arguable — and this repository takes that trade every time over a false
+  # green. It belongs with the other "regex, not a parser" gaps in the README.
+  tr '\n' ' ' < "$file" > "$WORK/flat" 2>/dev/null || : > "$WORK/flat"
+
   # A branch of the graph this gate cannot follow. Reported here, against the module that
   # contains it, rather than assumed harmless.
-  if grep -qE '(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\([[:space:]]*[^'"'"'")[:space:]]' -- "$file" 2>/dev/null; then
+  if grep -qE '(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\([[:space:]]*[^'"'"'")[:space:]]' -- "$WORK/flat" 2>/dev/null; then
     unknown "$(rel "$file") contains a non-literal import() or require() — this gate cannot tell what it pulls in, so it will not call this path clean"
   fi
 
   set +e
-  specs="$(grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$file" 2>/dev/null | sed -E "s/.*['\"]([^'\"]+)['\"]\$/\1/")"
+  # BOTH passes, unioned. Flattening alone was a REGRESSION and it went in the direction this
+  # change exists to fix: `grep -o` matches non-overlapping, so a string ending in `from "`
+  # swallows the real import after it. Measured —
+  #
+  #     const label = "imported from ";
+  #     import { key } from "../lib/secret";
+  #
+  # gave `ok [service-role]`, exit 0, over a module reaching SUPABASE_SERVICE_ROLE_KEY, on a
+  # tree the PREVIOUS version caught. The line pass finds ordinary imports with no window to
+  # swallow across; the flat pass finds the multi-line ones. Garbage the flat pass invents out
+  # of a swallowed span resolves as a bare specifier and is skipped, so the union only ever
+  # adds edges.
+  specs="$(
+    { grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$file" 2>/dev/null
+      grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$WORK/flat" 2>/dev/null
+    } | sed -E "s/.*['\"]([^'\"]+)['\"]\$/\1/" | sort -u
+  )"
   set -e
   while IFS= read -r spec; do
     [ -n "$spec" ] || continue

@@ -38,7 +38,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: review-${{ github.event.pull_request.number }}
+  # The fallback is not decoration. `github.event.pull_request.number` is EMPTY on any event
+  # that is not a pull request, and the caller template triggers on `[pull_request, push]`, so
+  # every push run collapsed into one shared group key of `review-` and cancelled the previous
+  # one. Harmless only for as long as this job stays skipped on push — which is a property of
+  # the `if` below, not of the group, and the two are not written down together anywhere else.
+  # A concurrency key that silently means "all of them" is the same shape as a check that
+  # silently means "nothing".
+  group: review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -132,7 +139,12 @@ jobs:
       # finishing. If the count file is missing or unparseable the run says UNKNOWN and goes RED:
       # there is no third colour, and a reviewer that died is not a clean bill of health.
       - name: Post the tally
-        if: always()
+        # success() || failure(), NOT always(). With cancel-in-progress on, a superseded run is
+        # CANCELLED, and always() runs this step there too — so every push to a draft PR left a
+        # spurious "UNKNOWN — the reviewer did not report a count" comment from the run that was
+        # deliberately killed. The tally must be unmissable when the reviewer ran; it must not
+        # narrate a run that was cancelled on purpose.
+        if: success() || failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
