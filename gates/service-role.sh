@@ -55,9 +55,13 @@ trap 'rm -rf "$WORK"' EXIT
 # ---------------------------------------------------------------------------
 SCAN="$WORK/scan.awk"
 cat > "$SCAN" <<'SCANAWK'
-# Emits one record per line: "S<specifier>" for a literal import specifier, or "N" for an
-# import()/require() this gate cannot read. Nothing else is emitted, so a string that merely
-# ENDS in the word `from` produces nothing at all.
+# Streaming JavaScript scanner. One record per line: "S<specifier>" for a literal import
+# specifier, or "N" for a branch this gate cannot read. A string that merely ENDS in the word
+# `from` produces nothing at all.
+#
+# LINE-INCREMENTAL, NOT SLURPED, for the reason recorded in the SQL scanner: `buf = buf $0
+# "\n"` is quadratic in mawk and took 12.1s on a 1.1MB generated types file against 0.11s for
+# the greps it replaced. State is carried across lines instead.
 function isregexpos(c) {
   return (c == "" || c == "(" || c == "," || c == "=" || c == ":" || c == "[" || c == "!" ||
           c == "&" || c == "|" || c == "?" || c == "{" || c == "}" || c == ";" || c == "+" ||
@@ -65,103 +69,107 @@ function isregexpos(c) {
           c == "k")
 }
 function want(w) { return (w == "from" || w == "import" || w == "require") }
-# JSX TEXT IS NOT JAVASCRIPT. `<p>Copied from "{"a"}" to "b"</p>` puts `from` immediately
-# before a quote, and no tokeniser that is not also a JSX parser can tell that apart from an
-# import. The candidate it yields carries a brace or an angle bracket, which a module
-# specifier does not.
-#
-# Dropping it is only safe BECAUSE the swallow is gone. Under the old grep extractor a
-# dropped candidate could be a real import that had been consumed into an invented span —
-# that is exactly how the previous filter turned two reds into greens. Here every candidate
-# comes from a genuine `from`/`import`/`require` position, so what is dropped is text, not
-# an import this gate would otherwise have followed.
+# JSX text is not JavaScript: `<p>Copied from "a" to "b"</p>` puts `from` before a quote and
+# nothing short of a JSX parser tells that from an import. A module specifier carries none of
+# these characters. Dropping such a candidate is only safe because the extractor no longer
+# invents spans — see the note in the gate.
 function plausible(v) { return (v != "" && v !~ /[<>{}]/) }
-{ buf = buf $0 "\n" }
-END {
-  n = length(buf); i = 1; pend = ""; paren = 0; last = ""
+# CLEARING A PENDING import(/require( IS THE REPORT. The first version decided this with a
+# lookahead on the rest of the line, which cannot see a `import(` whose argument is on the NEXT
+# line — the exact multi-line dynamic import that was a false green two releases ago, silently
+# reintroduced. In a token stream the rule is simply: a pending import( closed by anything that
+# is not a literal is a branch this gate cannot follow, whatever line that token is on.
+function clearpend() {
+  if (paren == 1 && (pend == "import" || pend == "require")) print "N"
+  pend = ""; paren = 0
+}
+{
+  n = length($0); i = 1
   while (i <= n) {
-    c = substr(buf, i, 1)
-    if (c == " " || c == "\t" || c == "\r" || c == "\n") { i++; continue }
-    if (c == "/" && substr(buf, i + 1, 1) == "/") { while (i <= n && substr(buf, i, 1) != "\n") i++; continue }
-    if (c == "/" && substr(buf, i + 1, 1) == "*") {
-      i += 2
-      while (i <= n && !(substr(buf, i, 1) == "*" && substr(buf, i + 1, 1) == "/")) i++
-      i += 2; continue
+    c = substr($0, i, 1)
+    if (mode == 1) {                                  # inside /* */
+      if (c == "*" && substr($0, i + 1, 1) == "/") { mode = 0; i += 2; continue }
+      i++; continue
     }
+    if (mode == 2) {                                  # inside a template literal
+      if (c == "\\") { tv = tv substr($0, i + 1, 1); i += 2; continue }
+      if (c == "$" && substr($0, i + 1, 1) == "{") {
+        interp = 1; tdepth = 1; i += 2
+        while (i <= n && tdepth > 0) {
+          c = substr($0, i, 1)
+          if (c == "{") tdepth++
+          else if (c == "}") tdepth--
+          i++
+        }
+        continue
+      }
+      if (c == "`") {
+        mode = 0; i++
+        if (want(pend)) { if (interp) print "N"; else if (plausible(tv)) print "S" tv }
+        pend = ""; paren = 0; last = "v"; tv = ""; interp = 0
+        continue
+      }
+      tv = tv c; i++; continue
+    }
+    if (c == " " || c == "\t" || c == "\r") { i++; continue }
+    if (c == "/" && substr($0, i + 1, 1) == "/") break          # rest of THIS line
+    if (c == "/" && substr($0, i + 1, 1) == "*") { mode = 1; i += 2; continue }
     if (c == "/" && isregexpos(last)) {
       i++; incls = 0
       while (i <= n) {
-        c = substr(buf, i, 1)
+        c = substr($0, i, 1)
         if (c == "\\") { i += 2; continue }
         if (c == "[") incls = 1
         else if (c == "]") incls = 0
         else if (c == "/" && !incls) { i++; break }
-        else if (c == "\n") break
         i++
       }
-      last = "v"; pend = ""; continue
+      last = "v"; clearpend(); continue
     }
     if (c == "\"" || c == "'") {
+      # Line-bounded on purpose. An apostrophe in JSX text would otherwise open a string that
+      # runs to the end of the file; ending it at the line boundary costs nothing, because a
+      # real specifier never spans lines.
       q = c; i++; v = ""
       while (i <= n) {
-        c = substr(buf, i, 1)
-        if (c == "\\") { v = v substr(buf, i + 1, 1); i += 2; continue }
+        c = substr($0, i, 1)
+        if (c == "\\") { v = v substr($0, i + 1, 1); i += 2; continue }
         if (c == q) { i++; break }
-        if (c == "\n") break
         v = v c; i++
       }
       if (want(pend) && plausible(v)) print "S" v
       pend = ""; paren = 0; last = "v"; continue
     }
-    if (c == "`") {
-      i++; v = ""; interp = 0; depth = 0
-      while (i <= n) {
-        c = substr(buf, i, 1)
-        if (c == "\\") { v = v substr(buf, i + 1, 1); i += 2; continue }
-        if (c == "$" && substr(buf, i + 1, 1) == "{") { interp = 1; depth = 1; i += 2
-          while (i <= n && depth > 0) {
-            c = substr(buf, i, 1)
-            if (c == "{") depth++
-            else if (c == "}") depth--
-            i++
-          }
-          continue
-        }
-        if (c == "`") { i++; break }
-        v = v c; i++
-      }
-      if (want(pend)) { if (interp) print "N"; else if (plausible(v)) print "S" v }
-      pend = ""; paren = 0; last = "v"; continue
-    }
+    if (c == "`") { mode = 2; tv = ""; interp = 0; i++; continue }
     if (c ~ /[A-Za-z_$]/) {
       v = ""
-      while (i <= n) { c = substr(buf, i, 1); if (c !~ /[A-Za-z0-9_$]/) break; v = v c; i++ }
-      # A PROPERTY, NOT A KEYWORD. `Array.from(",")` put `from` in the keyword slot and the
-      # string after it was emitted as an import specifier. `.from`, `.import` and `.require`
-      # are method names; only a bare one can introduce a specifier.
-      if (want(v) && last != ".") { pend = v; paren = 0 } else pend = ""
+      while (i <= n) { c = substr($0, i, 1); if (c !~ /[A-Za-z0-9_$]/) break; v = v c; i++ }
+      # `.from` is a method name, not a keyword: `Array.from(",")` put the string after it in
+      # the specifier slot.
+      if (want(v) && last != ".") { clearpend(); pend = v; paren = 0 } else clearpend()
       last = (v == "return" || v == "typeof" || v == "case" || v == "in" || v == "of" ||
               v == "new" || v == "delete" || v == "void" || v == "do" || v == "else" ||
               v == "yield" || v == "await") ? "k" : "w"
       continue
     }
     if (c == "(") {
-      # `from` is never followed by `(` in an import — `import x from "y"` has no parens — so a
-      # `(` after it means this was some other `from`.
-      if (pend == "from") { pend = ""; last = "("; i++; continue }
-      if (pend != "" && paren == 0) {
-        paren = 1
-        # Look ahead: an import()/require() whose argument is not a literal is a branch this
-        # gate cannot follow, and must be reported rather than assumed harmless.
-        j = i + 1
-        while (j <= n && substr(buf, j, 1) ~ /[ \t\r\n]/) j++
-        c2 = substr(buf, j, 1)
-        if (c2 != "\"" && c2 != "'" && c2 != "`" && pend != "from") { print "N"; pend = "" }
-      } else pend = ""
+      # `from` is never followed by `(` in an import — `import x from "y"` has no parens.
+      if (pend == "from") { clearpend(); last = "("; i++; continue }
+      if (pend != "" && paren == 0) paren = 1
+      else clearpend()
       last = "("; i++; continue
     }
-    pend = ""; last = c; i++
+    clearpend(); last = c; i++
   }
+  if (mode == 2) tv = tv "\n"
+}
+END {
+  # A SCANNER THAT LOST SYNC MUST NOT REPORT A CLEAN FILE. A template literal or block comment
+  # still open at end of file means everything after it was read as something it is not.
+  # Measured before this guard: one stray backtick in JSX text (`<p>Press the ` key</p>`)
+  # consumed the rest of the file and a `require("@/lib/admin")` below it reported `ok`,
+  # exit 0, over a module reaching the secret.
+  if (mode == 2 || mode == 1) print "N"
 }
 SCANAWK
 

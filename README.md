@@ -311,12 +311,17 @@ header, which is the honest account of what that scanner does not do.
   folds `Orders` to `orders` but keeps `"Orders"` distinct — Prisma and Drizzle emit the
   quoted PascalCase form. Three successive regex versions each traded one error for another
   here; the pair comparison leaves no interpolated pattern to be wider than the name it was
-  given. It reads a `create table` inside a function body, a `DO $$` block, and an
-  `execute '…'` string, and reds on all three. What it does **not** read: a name assembled at
-  runtime (`execute format('create table %I …')` or string concatenation), `select … into`,
-  and a statement on a line where an earlier string literal contains `--`, which the comment
-  stripper takes for a comment. Those are silent passes, and they are the reason this bullet
-  lists them.
+  given. It reads a `create table` inside a function body and inside a `DO $$` block, and reds
+  on both. It does **not** read one inside a `'…'` string literal: a string is data to the
+  scanner, and reading it named tables nobody created and sent fixers to edit their data —
+  but a string containing both `create` and `table` is reported UNKNOWN rather than passed
+  over, because `execute` runs it. What it genuinely cannot read, as silent passes: a name
+  assembled at runtime (`execute format('create table %I …')` or string concatenation),
+  `select … into`, and a statement on a line where an earlier string literal contains `--`,
+  which the comment stripper takes for a comment. **An unterminated quoted identifier or
+  string is UNKNOWN, not a pass** — a scanner that lost sync read everything after it as
+  something it is not, and one `"` inside an ordinary string literal (an inch mark in
+  `values ('24" monitor')`) is enough to do that.
 - **The service-role gate tokenises JavaScript; it does not match it.** Strings, template
   literals, line and block comments and regex literals are recognised as what they are, and a
   specifier is emitted only from a real `from`/`import`/`require` position. This replaced a
@@ -326,9 +331,21 @@ header, which is the honest account of what that scanner does not do.
   regex literal, `{ note: "Imported from " }`) and dropping it lost a real import that had
   been swallowed. Both were measured, in three consecutive review rounds, before the
   extractor itself was replaced. A multi-line `await import(` is followed; a `//` comment no
-  longer runs into the code after it. What it still cannot read is **JSX text**: `<p>Copied
-  from "a" to "b"</p>` puts `from` before a quote and nothing short of a JSX parser can tell
-  that from an import, so a candidate carrying `<`, `>`, `{` or `}` is dropped as text.
+  longer runs into the code after it; `import(/* webpackChunkName */ "./x")` is read as the
+  literal import it is. **A template literal or block comment still open at end of file is
+  UNKNOWN**, because a scanner that lost sync read the rest of the file as something it is
+  not — one stray backtick in JSX text otherwise consumed everything below it, and a
+  `require("@/lib/admin")` under it reported `ok`. What it still cannot read is **JSX text**:
+  `<p>Copied from "a" to "b"</p>` puts `from` before a quote and nothing short of a JSX parser
+  can tell that from an import, so a candidate carrying `<`, `>`, `{` or `}` is dropped as
+  text. Node subpath imports (`#internal/db`) are UNKNOWN: they resolve through `package.json`
+  `imports`, which this gate does not read.
+- **Both scanners are line-incremental, and that is a correctness property, not a speed one.**
+  The first version accumulated each file with `buf = buf $0 "\n"`, which mawk reallocates and
+  copies every line: 12.1s on a 1.1MB generated types file against 0.11s for the greps it
+  replaced, and quadratic, so it got worse with size. `gates.yml` sets no `timeout-minutes`,
+  so that surfaces not as a red but as a job that takes minutes — the shape of the hang this
+  toolkit has already shipped once.
 - **The service-role gate resolves like TypeScript, with one deliberate divergence.** It
   follows `./`, `../`, absolute paths, and **every alias declared in tsconfig
   `compilerOptions.paths`** — not just `@/*` — plus a **`baseUrl` with no matching `paths`
