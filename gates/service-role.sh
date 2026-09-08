@@ -30,6 +30,142 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
+# THE EXTRACTOR IS A TOKENISER, NOT A REGEX — and that is the fourth attempt at this code.
+#
+# `grep -o` matches NON-OVERLAPPING, so a string ending in the word `from` immediately before
+# a quote consumed the rest of the line up to the next quote as one "specifier". Every
+# version built on that had to choose which way to be wrong, and each of three consecutive
+# review rounds found the choice:
+#
+#   - report the invented span      -> a blocking UNKNOWN naming an import that does not
+#                                      exist, on ordinary source: `Array.from(",")`, a regex
+#                                      literal, `{ note: "Imported from " }`. No action a
+#                                      fixer can take.
+#   - drop the invented span        -> a REAL import swallowed into the span is dropped with
+#                                      it. Measured: `const label = "imported from ";
+#                                      import { admin } from "../lib/admin";` on one line
+#                                      went `ok`, exit 0, over a module reaching the secret.
+#
+# Both are the same defect, and neither is fixable by choosing a better filter, because the
+# filter is downstream of the damage. So the scan tokenises: strings, template literals,
+# line and block comments and regex literals are recognised as what they are, and a
+# specifier is emitted only from a real `from`/`import`/`require` position. There is no
+# invented span left to report or to drop, and the `flat` pass and its `//`-comment cost are
+# gone with it.
+# ---------------------------------------------------------------------------
+SCAN="$WORK/scan.awk"
+cat > "$SCAN" <<'SCANAWK'
+# Emits one record per line: "S<specifier>" for a literal import specifier, or "N" for an
+# import()/require() this gate cannot read. Nothing else is emitted, so a string that merely
+# ENDS in the word `from` produces nothing at all.
+function isregexpos(c) {
+  return (c == "" || c == "(" || c == "," || c == "=" || c == ":" || c == "[" || c == "!" ||
+          c == "&" || c == "|" || c == "?" || c == "{" || c == "}" || c == ";" || c == "+" ||
+          c == "-" || c == "*" || c == "%" || c == "<" || c == ">" || c == "~" || c == "^" ||
+          c == "k")
+}
+function want(w) { return (w == "from" || w == "import" || w == "require") }
+# JSX TEXT IS NOT JAVASCRIPT. `<p>Copied from "{"a"}" to "b"</p>` puts `from` immediately
+# before a quote, and no tokeniser that is not also a JSX parser can tell that apart from an
+# import. The candidate it yields carries a brace or an angle bracket, which a module
+# specifier does not.
+#
+# Dropping it is only safe BECAUSE the swallow is gone. Under the old grep extractor a
+# dropped candidate could be a real import that had been consumed into an invented span —
+# that is exactly how the previous filter turned two reds into greens. Here every candidate
+# comes from a genuine `from`/`import`/`require` position, so what is dropped is text, not
+# an import this gate would otherwise have followed.
+function plausible(v) { return (v != "" && v !~ /[<>{}]/) }
+{ buf = buf $0 "\n" }
+END {
+  n = length(buf); i = 1; pend = ""; paren = 0; last = ""
+  while (i <= n) {
+    c = substr(buf, i, 1)
+    if (c == " " || c == "\t" || c == "\r" || c == "\n") { i++; continue }
+    if (c == "/" && substr(buf, i + 1, 1) == "/") { while (i <= n && substr(buf, i, 1) != "\n") i++; continue }
+    if (c == "/" && substr(buf, i + 1, 1) == "*") {
+      i += 2
+      while (i <= n && !(substr(buf, i, 1) == "*" && substr(buf, i + 1, 1) == "/")) i++
+      i += 2; continue
+    }
+    if (c == "/" && isregexpos(last)) {
+      i++; incls = 0
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "[") incls = 1
+        else if (c == "]") incls = 0
+        else if (c == "/" && !incls) { i++; break }
+        else if (c == "\n") break
+        i++
+      }
+      last = "v"; pend = ""; continue
+    }
+    if (c == "\"" || c == "'") {
+      q = c; i++; v = ""
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "\\") { v = v substr(buf, i + 1, 1); i += 2; continue }
+        if (c == q) { i++; break }
+        if (c == "\n") break
+        v = v c; i++
+      }
+      if (want(pend) && plausible(v)) print "S" v
+      pend = ""; paren = 0; last = "v"; continue
+    }
+    if (c == "`") {
+      i++; v = ""; interp = 0; depth = 0
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "\\") { v = v substr(buf, i + 1, 1); i += 2; continue }
+        if (c == "$" && substr(buf, i + 1, 1) == "{") { interp = 1; depth = 1; i += 2
+          while (i <= n && depth > 0) {
+            c = substr(buf, i, 1)
+            if (c == "{") depth++
+            else if (c == "}") depth--
+            i++
+          }
+          continue
+        }
+        if (c == "`") { i++; break }
+        v = v c; i++
+      }
+      if (want(pend)) { if (interp) print "N"; else if (plausible(v)) print "S" v }
+      pend = ""; paren = 0; last = "v"; continue
+    }
+    if (c ~ /[A-Za-z_$]/) {
+      v = ""
+      while (i <= n) { c = substr(buf, i, 1); if (c !~ /[A-Za-z0-9_$]/) break; v = v c; i++ }
+      # A PROPERTY, NOT A KEYWORD. `Array.from(",")` put `from` in the keyword slot and the
+      # string after it was emitted as an import specifier. `.from`, `.import` and `.require`
+      # are method names; only a bare one can introduce a specifier.
+      if (want(v) && last != ".") { pend = v; paren = 0 } else pend = ""
+      last = (v == "return" || v == "typeof" || v == "case" || v == "in" || v == "of" ||
+              v == "new" || v == "delete" || v == "void" || v == "do" || v == "else" ||
+              v == "yield" || v == "await") ? "k" : "w"
+      continue
+    }
+    if (c == "(") {
+      # `from` is never followed by `(` in an import — `import x from "y"` has no parens — so a
+      # `(` after it means this was some other `from`.
+      if (pend == "from") { pend = ""; last = "("; i++; continue }
+      if (pend != "" && paren == 0) {
+        paren = 1
+        # Look ahead: an import()/require() whose argument is not a literal is a branch this
+        # gate cannot follow, and must be reported rather than assumed harmless.
+        j = i + 1
+        while (j <= n && substr(buf, j, 1) ~ /[ \t\r\n]/) j++
+        c2 = substr(buf, j, 1)
+        if (c2 != "\"" && c2 != "'" && c2 != "`" && pend != "from") { print "N"; pend = "" }
+      } else pend = ""
+      last = "("; i++; continue
+    }
+    pend = ""; last = c; i++
+  }
+}
+SCANAWK
+
+# ---------------------------------------------------------------------------
 # Applicability. This gate is about Next.js request-path modules; run against a tree that
 # is not a Next.js app it has nothing to walk. Saying "ok" over an empty walk is the false
 # success this toolkit refuses, so the two cases are separated and both are stated out loud:
@@ -88,7 +224,41 @@ fi
 # `@/*` key got a red with no reason in it, which reads as a broken gate rather than as the
 # gate saying anything. Every command substitution here ends in `|| true` for that reason.
 # ---------------------------------------------------------------------------
-TSCONFIG="$ROOT/tsconfig.json"
+TSCONFIG_RAW="$ROOT/tsconfig.json"
+# tsconfig.json permits comments, and every read below has to see past them. `grep -q
+# '"baseUrl"'` armed the baseUrl fallback on a COMMENTED-OUT key: a config carrying
+# `// "baseUrl": ".",` and no live one made `import React from "react"` resolve to a repo
+# directory named react/ and reported a violation against the package. A commented-out line
+# is not configuration.
+TSCONFIG="$WORK/tsconfig.json"
+if [ -f "$TSCONFIG_RAW" ]; then
+  awk '
+    { buf = buf $0 "\n" }
+    END {
+      n = length(buf); i = 1
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "\"") {
+          printf "%s", c; i++
+          while (i <= n) {
+            c = substr(buf, i, 1)
+            if (c == "\\") { printf "%s", substr(buf, i, 2); i += 2; continue }
+            printf "%s", c; i++
+            if (c == "\"") break
+          }
+          continue
+        }
+        if (c == "/" && substr(buf, i + 1, 1) == "/") { while (i <= n && substr(buf, i, 1) != "\n") i++; continue }
+        if (c == "/" && substr(buf, i + 1, 1) == "*") {
+          i += 2
+          while (i <= n && !(substr(buf, i, 1) == "*" && substr(buf, i + 1, 1) == "/")) i++
+          i += 2; continue
+        }
+        printf "%s", c; i++
+      }
+    }
+  ' "$TSCONFIG_RAW" > "$TSCONFIG" 2>/dev/null || cp -- "$TSCONFIG_RAW" "$TSCONFIG" 2>/dev/null || :
+fi
 # Named in the UNKNOWN below only when it is actually there. The message said "no alias
 # declared in tsconfig.json" on a tree with no tsconfig.json at all, which sends a reader
 # to open a file that does not exist.
@@ -441,80 +611,26 @@ while :; do
   file="$(sed -n "${n}p" "$QUEUE")"
   [ -z "$file" ] && break
 
-  # SCANNED WITH NEWLINES COLLAPSED, because a line-at-a-time grep does not see a statement
-  # that spans lines — and the statement most likely to span lines is the one this gate must
-  # not miss. Shipped in v1.1.0, measured:
-  #
-  #     const mod = await import(
-  #       process.env.MODULE_NAME ?? "@/lib/secret"
-  #     );
-  #
-  # produced `ok [service-role]`, exit 0, over a page that reaches SUPABASE_SERVICE_ROLE_KEY.
-  # The guard did not fire because `import(` and the non-literal argument were on different
-  # lines, and the extractor did not follow it for the same reason. A FALSE GREEN in the
-  # security gate, from a formatting choice Prettier makes on its own.
-  #
-  # The cost of flattening: a `//` comment now runs into the code after it, so a mention of
-  # `import(` inside a comment can raise a spurious UNKNOWN. That is over-inclusive — a false
-  # RED, visible and arguable — and this repository takes that trade every time over a false
-  # green. It belongs with the other "regex, not a parser" gaps in the README.
-  tr '\n' ' ' < "$file" > "$WORK/flat" 2>/dev/null || : > "$WORK/flat"
-
-  # A branch of the graph this gate cannot follow. Reported here, against the module that
-  # contains it, rather than assumed harmless.
-  if grep -qE '(^|[^A-Za-z0-9_$.])(import|require)[[:space:]]*\([[:space:]]*[^'"'"'")[:space:]]' -- "$WORK/flat" 2>/dev/null; then
+  # One tokenised pass. `N` is a branch this gate cannot follow — an import() or require()
+  # whose argument is not a literal — reported against the module that contains it rather
+  # than assumed harmless. `S<specifier>` is a literal specifier from a real import position.
+  set +e
+  recs="$(awk -f "$SCAN" -- "$file" 2>/dev/null)"
+  set -e
+  nonliteral=0
+  : > "$WORK/specs"
+  while IFS= read -r rec; do
+    case "$rec" in
+      "") continue ;;
+      N)  nonliteral=1 ;;
+      S*) printf '%s\n' "${rec#S}" >> "$WORK/specs" ;;
+    esac
+  done <<< "$recs"
+  if [ "$nonliteral" = 1 ]; then
     unknown "$(rel "$file") contains a non-literal import() or require() — this gate cannot tell what it pulls in, so it will not call this path clean"
   fi
-
   set +e
-  # BOTH passes, unioned. Flattening alone was a REGRESSION and it went in the direction this
-  # change exists to fix: `grep -o` matches non-overlapping, so a string ending in `from "`
-  # swallows the real import after it. Measured —
-  #
-  #     const label = "imported from ";
-  #     import { key } from "../lib/secret";
-  #
-  # gave `ok [service-role]`, exit 0, over a module reaching SUPABASE_SERVICE_ROLE_KEY, on a
-  # tree the PREVIOUS version caught. The line pass finds ordinary imports with no window to
-  # swallow across; the flat pass finds the multi-line ones.
-  #
-  # AND THE GARBAGE IS DROPPED HERE, not left to be classified. The sentence that stood here
-  # said the invented spans "resolve as a bare specifier and are skipped, so the union only
-  # ever adds edges" — true only for as long as an unclassifiable specifier was silently
-  # skipped. The moment the classifier below began reporting UNKNOWN instead (the right
-  # change, made in the same commit), that sentence went false and every template literal in
-  # the tree became a blocking red. Measured, on a file that imports NOTHING:
-  #
-  #     const sql = `select id, owner from "${table}" where owner = $1`;
-  #     UNKNOWN [service-role] app/api/orders/route.ts imports '${table}' ...
-  #
-  # There is no action a fixer can take: the message names an import that does not exist and
-  # the only way to green is to delete the string. Note it was the LINE pass that produced it —
-  # the old sentence was wrong about which pass invents garbage as well as about what became
-  # of it.
-  #
-  # THE FILTER IS `${` AND NOTHING ELSE, and the first version of it was far wider — every
-  # candidate carrying a character "no module specifier can contain". That set turned two REAL
-  # imports into silent skips, which is worse than the false red it was removing, because the
-  # swallow does not only invent garbage: it can swallow a real import INTO the garbage.
-  # Measured, both against the previous revision, which reported them:
-  #
-  #     const label = "imported from "; import { admin } from "../lib/admin";
-  #       -> the whole span became one candidate, dropped; lib/admin.ts never walked. `ok`.
-  #     import { admin } from "../lib/(group)/admin";
-  #       -> a resolvable file whose path holds a Next.js route group, dropped. `ok`.
-  #
-  # The first of those is `fixtures/service-role/bad/cases/string-ending-in-from/` with the
-  # newline removed — one character from the fixture that exists to catch exactly it.
-  # `${` is the whole artefact: it is the only shape the extractor produces that CANNOT be a
-  # path, and dropping it leaves everything else to be classified and reported as before.
-  specs="$(
-    { grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$file" 2>/dev/null
-      grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$WORK/flat" 2>/dev/null
-    } | sed -E "s/.*['\"]([^'\"]+)['\"]\$/\1/" \
-      | grep -vE '[$][{]' \
-      | sort -u
-  )"
+  specs="$(sort -u "$WORK/specs" 2>/dev/null)"
   set -e
   while IFS= read -r spec; do
     [ -n "$spec" ] || continue

@@ -296,60 +296,56 @@ header, which is the honest account of what that scanner does not do.
   here and is called from consumer repositories; wiring a self-call is a separate change, so
   until then the fixture procedure is the only thing that exercises it. Stated because a
   reviewer nobody has run is a reviewer nobody has seen fail.
-- **The migrations-lint gate matches `create table` by regex.** It reads `unlogged`, `temp`
-  and `temporary` tables, a quoted or unquoted schema qualifier with or without whitespace
-  around the dot, a quoted identifier containing a space or a dot, and an optional database
-  qualifier — and it carries the **schema and table together**: RLS on `archive.orders` does
-  not satisfy a `create table public.orders`, and an unqualified name is normalised to
-  `public`. It reads a `create table` inside a function body, inside a `DO $$` block, and
-  inside an `execute '…'` string, and reds on all three — measured; the sentence that used to
-  stand here said it read none of them, which was false in every clause. What it genuinely
-  cannot read is a name assembled at runtime: `execute format('create table %I …')`.
-- **The service-role gate scans each module with newlines collapsed**, so that a statement
-  spanning lines is seen as one — a multi-line `await import(` was a false green before
-  v1.2.1. The cost is that a `//` comment runs into the code after it, so `import(` mentioned
-  inside a comment can raise a spurious UNKNOWN. Over-inclusive, and that is the direction
-  this toolkit errs in: a visible red someone can argue with, never a green nobody questions.
-- **The service-role gate reads imports with a regex, not a parser.** It follows literal
-  `from`, `import` and `require` specifiers, resolving `./`, `../`, absolute paths, and
-  **every alias declared in tsconfig `compilerOptions.paths`** — not just `@/*`. A specifier
-  matching no declared alias is treated as a published package **only if it could be one**:
-  from v1.2.1 the claim is tested against npm's name shape, so `@/lib/secret` — no alias, and
-  no valid empty scope — is UNKNOWN rather than a dependency to skip. That was a false green
-  before. A specifier that matches an alias and resolves to no file is UNKNOWN, never skipped.
-  If the `paths` object is present and no alias can be parsed out of it, that is UNKNOWN too.
-  It also maps the **emitted** extension back to the source one (`./m.mjs` → `m.mts`/`.d.mts`,
-  `.cjs` → `.cts`/`.d.cts`, `.js` → `.ts`/`.tsx`/`.d.ts`), which `moduleResolution: nodenext`
-  requires you to write and which was a false red before v1.2.1. Ordering is
-  **implementation before declaration**, in both the extension list and the emitted→source
-  map: a stale `.mjs` beside its `.mts` cannot mask a secret added to the source, and a
-  hand-written `.d.ts` beside a `.js` cannot stand in for the module Node actually loads. A
-  declaration file is what TypeScript resolves to and is never what runs in the request path. A **`baseUrl` with no matching `paths` entry** — Next.js's documented "Absolute
-  Imports" — is resolved too: `import "lib/admin"` was skipped as a published package while
-  the same file spelled `../lib/admin` was caught, a false green chosen by nothing but the
-  spelling. It arms on the **presence of the key**, not its value: the first version tested
-  the value and so missed `"baseUrl": "."`, which is the spelling in Next.js's own docs and
-  the one `create-next-app` ships. A specifier that appears inside a
-  comment or a string is
-  followed as though it were real — over-inclusive, which costs a false red rather than a
-  false green. What it cannot follow at all it calls UNKNOWN.
+- **The migrations-lint gate tokenises SQL; it does not match it.** Statements are scanned
+  once — quoted identifiers with their `""` escapes, any schema or database qualifier,
+  `unlogged`/`temp`/`temporary`, `IF [NOT] EXISTS`, `ALTER TABLE ONLY`, a statement spanning
+  lines — and the created and RLS-enabled **(schema, table) pairs are compared as strings**.
+  So RLS on `archive.orders` does not satisfy a `create table public.orders`; an unqualified
+  name normalises to `public`; and a quoted identifier keeps its case, because PostgreSQL
+  folds `Orders` to `orders` but keeps `"Orders"` distinct — Prisma and Drizzle emit the
+  quoted PascalCase form. Three successive regex versions each traded one error for another
+  here; the pair comparison leaves no interpolated pattern to be wider than the name it was
+  given. It reads a `create table` inside a function body, a `DO $$` block, and an
+  `execute '…'` string, and reds on all three. What it does **not** read: a name assembled at
+  runtime (`execute format('create table %I …')` or string concatenation), `select … into`,
+  and a statement on a line where an earlier string literal contains `--`, which the comment
+  stripper takes for a comment. Those are silent passes, and they are the reason this bullet
+  lists them.
+- **The service-role gate tokenises JavaScript; it does not match it.** Strings, template
+  literals, line and block comments and regex literals are recognised as what they are, and a
+  specifier is emitted only from a real `from`/`import`/`require` position. This replaced a
+  `grep -o` extractor whose non-overlapping window let a string ending in the word `from`
+  consume the following import into one invented span — a defect with no correct filter,
+  because reporting the span was a blocking UNKNOWN on ordinary source (`Array.from(",")`, a
+  regex literal, `{ note: "Imported from " }`) and dropping it lost a real import that had
+  been swallowed. Both were measured, in three consecutive review rounds, before the
+  extractor itself was replaced. A multi-line `await import(` is followed; a `//` comment no
+  longer runs into the code after it. What it still cannot read is **JSX text**: `<p>Copied
+  from "a" to "b"</p>` puts `from` before a quote and nothing short of a JSX parser can tell
+  that from an import, so a candidate carrying `<`, `>`, `{` or `}` is dropped as text.
+- **The service-role gate resolves like TypeScript, with one deliberate divergence.** It
+  follows `./`, `../`, absolute paths, and **every alias declared in tsconfig
+  `compilerOptions.paths`** — not just `@/*` — plus a **`baseUrl` with no matching `paths`
+  entry**, which is Next.js's documented "Absolute Imports" and which was a false green
+  chosen by nothing but the spelling of the import. `baseUrl` arms on the presence of the
+  key, read from a **comment-stripped** copy of tsconfig.json, because a commented-out
+  `// "baseUrl": "."` is not configuration. A specifier matching no alias is called a
+  published package **only if it could be one** — tested against npm's name shape, so
+  `@/lib/secret` is UNKNOWN, not a dependency to skip. One that matches an alias and resolves
+  to no file is UNKNOWN, never skipped; a `paths` object nothing parses out of is UNKNOWN too.
+  It maps the **emitted** extension back to the source (`./m.mjs` → `m.mts`, `.cjs` → `.cts`,
+  `.js` → `.ts`/`.tsx`) as `moduleResolution: nodenext` requires. **The divergence:
+  implementation before declaration.** TypeScript resolves `./admin.js` to `admin.d.ts` when
+  both exist; this gate takes `admin.js`, because a declaration file by construction cannot
+  hold a secret and the question here is what code runs in the request path, not where the
+  types are.
 - **The service-role gate does not follow tsconfig `extends`.** Aliases are read from the
   repo's own `tsconfig.json` only. TypeScript does not deep-merge `paths` — measured with
   tsc 5.6.3: a child that declares `paths` REPLACES the base's object entirely, so a base's
   `@/*` is already dead in that tree — but a child that declares `extends` and no `paths` of
   its own inherits them, and this gate cannot see them. That case is UNKNOWN, not a pass.
   A `baseUrl` **inherited from a base config** is not read either, which makes alias targets
-  fail to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in. A
-  baseUrl declared in the repo's own tsconfig *is* read, including for bare specifiers.
-- **The service-role gate drops one extractor artefact before classifying it: `${`.** A
-  template literal in ordinary source (`` `select … from "${table}"` ``) otherwise became a
-  blocking UNKNOWN naming an import that does not exist, in a file that imports nothing, with
-  no action a fixer could take. The filter is deliberately just that one shape. A wider set —
-  every character "no module specifier can contain" — was tried and reverted: the extractor's
-  swallow does not only invent garbage, it can swallow a **real** import into it, and a wide
-  filter turned two reproduced reds into silent greens (a real import on the same line as a
-  string ending in `from "`, and a resolvable path containing a Next.js route group,
-  `../lib/(group)/admin`). Everything that is not `${` is still classified and reported.
+  fail to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in.
 - **The service-role gate does not look inside published packages.** A bare specifier
   (`react`, `@supabase/ssr`) is out of scope by definition, so a third-party module that
   reads `process.env.SUPABASE_SECRET_KEY` itself is invisible to it. Repo source is what it

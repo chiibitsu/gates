@@ -54,7 +54,10 @@ strip_sql_comments() {
 }
 
 STRIPPED="$(mktemp)"
-trap 'rm -f "$STRIPPED"' EXIT
+WORK_TOK="$(mktemp)"
+WORK_C="$(mktemp)"
+WORK_R="$(mktemp)"
+trap 'rm -f "$STRIPPED" "$WORK_TOK" "$WORK_C" "$WORK_R"' EXIT
 
 for up in "$MIG"/*.sql; do
   [ -e "$up" ] || continue
@@ -62,90 +65,141 @@ for up in "$MIG"/*.sql; do
   down="${up%.sql}.down.sql"
   [ -f "$down" ] || fail "no rollback: $(basename "$up") needs $(basename "$down")"
   strip_sql_comments "$up" > "$STRIPPED"
-  # tables created here must enable RLS here.
+  # TABLES CREATED HERE MUST ENABLE RLS HERE — DECIDED BY TOKENISING, NOT BY MATCHING.
   #
-  # THE SCHEMA QUALIFIER IS PART OF THE TABLE'S IDENTITY AND IS CARRIED THROUGH. Three
-  # spellings had to be reconciled, and getting two of them right while dropping the third
-  # cost a false green:
+  # This check was a regex three times over and produced a finding in each of three
+  # consecutive review rounds, alternating direction every time:
   #
-  #   - `create table "public"."orders"` is one identifier per quoted part. The pattern used
-  #     to name only `public\.` unquoted, so the leading `"?` swallowed the opening quote and
-  #     `public` was read as the TABLE. Where a table genuinely named `public` had RLS the
-  #     file PASSED and `orders` was never checked; where it did not, the violation named the
-  #     wrong table — a red a fixer cannot act on.
-  #   - Fixing that by matching ANY schema generically on both sides, while the create side
-  #     still discarded the schema, made the check assert only "SOME table called orders, in
-  #     SOME schema, has RLS" — under a message naming one specific table. Measured:
-  #     `create table public.orders` + `alter table archive.orders enable row level security`
-  #     went from red to `ok`, over a state PostgreSQL 16 accepts and in which public.orders
-  #     really is unprotected. Two schemas holding a same-named table is an ordinary layout.
-  #     A widened matcher under an unwidened message is this repository's recurring defect,
-  #     introduced here in the very commit that removed another instance of it.
-  #   - So the pair travels together. Unqualified is normalised to `public`, which is what an
-  #     unqualified name resolves to under the default search_path, and an unqualified ALTER
-  #     is therefore accepted only for a table created in `public`.
+  #   - `create table "public"."orders"` read `public` as the table. Where a table genuinely
+  #     named `public` had RLS the file PASSED — a false green.
+  #   - Widening the ALTER side to any schema while the create side discarded it made the
+  #     check assert "SOME table called orders, in SOME schema, has RLS" under a message
+  #     naming one table: `alter table archive.orders` satisfied `create table public.orders`.
+  #     Another false green, added by the commit that removed the first one.
+  #   - Carrying the pair fixed that and broke four compliant files instead:
+  #     `mydb.public.orders`, `public."order items"`, `public."a.b"`, and `ALTER TABLE ONLY`
+  #     (which is what pg_dump emits) — reds naming tables that do not exist.
+  #   - And still open after all three: a quoted identifier lost its case, so
+  #     `create table public."Orders"` was satisfied by RLS on `orders`, which PostgreSQL
+  #     treats as a different table and which is what Prisma and Drizzle emit; a `""` inside
+  #     a quoted name ended the name early; a name containing a regex metacharacter built a
+  #     matcher wider than itself; a `create table` whose name sat on the NEXT line was not
+  #     seen at all, because grep is line-scoped — a silent pass.
   #
-  # `unlogged` and `temp`/`temporary` tables are matched too. They were invisible to
-  # `create[[:space:]]+table`, so an `create unlogged table orders` with no RLS anywhere was
-  # never checked at all — `ok`, exit 0. RLS applies to unlogged tables; verified on
-  # PostgreSQL 16. Whitespace around the qualifier dot (`public . orders`, which Postgres
-  # accepts) is matched for the same reason: a spelling the gate cannot read is a table the
-  # gate does not check.
-  while IFS="$(printf '\t')" read -r sch tbl; do
-    [ -n "$tbl" ] || continue
-    # ESCAPED BEFORE INTERPOLATION. A quoted identifier can now carry any character, and both
-    # halves are pasted straight into an ERE — `create table public."order.items"` would
-    # otherwise build a pattern whose `.` matches any character and so accepts RLS on a table
-    # that is not this one. A matcher wider than the name it was given.
-    ere_escape='s/[.*+?^$(){}|]/\\&/g;s/\[/\\[/g;s/\]/\\]/g'
-    sch_re="$(printf '%s' "$sch" | sed -E "$ere_escape")"
-    tbl_re="$(printf '%s' "$tbl" | sed -E "$ere_escape")"
-    # The optional DATABASE qualifier. `create table mydb.public.orders` is accepted by
-    # PostgreSQL, and the create side now reads it correctly (schema `public`, table `orders`)
-    # — but the ALTER side did not admit the `mydb.` prefix, so the matching
-    # `alter table mydb.public.orders enable row level security` in the same file did not
-    # match and a COMPLIANT file went red. Half a fix is a red a fixer cannot act on.
-    dbq="((\"[^\"]*\"|[a-z_][a-z0-9_]*)[[:space:]]*\.[[:space:]]*)?"
-    if [ "$sch" = "public" ]; then
-      qual="(${dbq}\"?public\"?[[:space:]]*\.[[:space:]]*)?"
-    else
-      qual="${dbq}\"?${sch_re}\"?[[:space:]]*\.[[:space:]]*"
-    fi
-    # `ONLY` is valid PostgreSQL and is what pg_dump emits, so a table WITH RLS was reported as
-    # having none without it.
-    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?(only[[:space:]]+)?${qual}\"?${tbl_re}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
-      fail "$(basename "$up"): table '$sch.$tbl' created without 'enable row level security' in the same file"
-    fi
-  done < <(
-    # Lowercased with `tr` before any sed runs, so no step needs a case-insensitive sed flag.
-    # `s///i` is a GNU extension and this repository has already been bitten once by a GNU-only
-    # regex feature silently matching nothing on BSD (`\s`, 18 occurrences, fixed in v1.2.1).
-    grep -ioE "create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(\"[^\"]*\"|[a-z_][a-z0-9_]*)([[:space:]]*\.[[:space:]]*(\"[^\"]*\"|[a-z_][a-z0-9_]*)){0,2}" "$STRIPPED" \
-      | tr '[:upper:]' '[:lower:]' \
-      | sed -E 's/^create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?//' \
-      | awk '
-          # Split on dots OUTSIDE quotes, so `"order items"` survives the space and `"a.b"`
-          # survives the dot. A blind `awk -F.` read `mydb.public.orders` as schema `mydb`,
-          # table `public` and reported a violation naming a table that does not exist, over a
-          # file that was compliant — the same "red a fixer cannot act on" this gate was fixed
-          # for one release ago, reintroduced by the qualifier that fixed it.
-          {
-            n = 0; cur = ""; inq = 0
-            for (i = 1; i <= length($0); i++) {
-              c = substr($0, i, 1)
-              if (c == "\"") { inq = !inq; continue }
-              if (c == "." && !inq) { part[++n] = cur; cur = ""; continue }
-              cur = cur c
+  # Every one of those is the same defect: a pattern deciding a question that needs a parse.
+  # So the statements are tokenised once, both sides through the SAME scanner, and the two
+  # (schema, table) pairs are compared as STRINGS. There is no interpolated regex left to be
+  # wider than the name it was given, no case flag to fold a quoted identifier, and no line
+  # boundary to hide a statement behind.
+  : > "$WORK_C"; : > "$WORK_R"
+  awk '
+    # Emits three lines per statement found: kind ("C" create / "R" rls-enabled), schema, table.
+    # Three lines rather than one delimited line because a quoted identifier may contain any
+    # character, a tab and a newline included, and a delimiter a value can contain is not a
+    # delimiter. Newline inside a quoted identifier would still break this; that is recorded in
+    # the README rather than claimed away.
+    function parse_name(p,   j) {
+      NAME_N = 0; j = p
+      while (1) {
+        if (tk[j] == "W" || tk[j] == "Q") { NAME_N++; NAME_P[NAME_N] = tv[j]; j++ } else return 0
+        if (tk[j] == "D") { j++; continue }
+        break
+      }
+      NAME_END = j
+      return 1
+    }
+    function emit(kind,   sch, tbl) {
+      tbl = NAME_P[NAME_N]
+      sch = (NAME_N >= 2) ? NAME_P[NAME_N - 1] : "public"
+      if (tbl == "") return
+      print kind; print sch; print tbl
+    }
+    { buf = buf $0 "\n" }
+    END {
+      n = length(buf); i = 1; ntok = 0
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == " " || c == "\t" || c == "\r" || c == "\n") { i++; continue }
+        if (c == "\"") {
+          # A quoted identifier. `""` inside it is one embedded quote, which the old
+          # `"[^"]*"` regex ended the identifier on — `public."say ""hi"""` was read as table
+          # `say`, a violation naming a table that does not exist over a compliant file.
+          i++; v = ""
+          while (i <= n) {
+            c = substr(buf, i, 1)
+            if (c == "\"") {
+              if (substr(buf, i + 1, 1) == "\"") { v = v "\""; i += 2; continue }
+              i++; break
             }
-            part[++n] = cur
-            for (i = 1; i <= n; i++) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", part[i]) }
-            # The last two components are schema and table; anything before them is the
-            # database, which PostgreSQL accepts and which names no schema.
-            if (n >= 2) print part[n-1] "\t" part[n]
-            else        print "public\t" part[n]
+            v = v c; i++
           }
-        '
-  )
+          # CASE IS PRESERVED. PostgreSQL folds an unquoted identifier to lower case and keeps a
+          # quoted one exactly, so `"Orders"` and `orders` are two different tables. Lowercasing
+          # both and matching case-insensitively let RLS on one satisfy a create of the other —
+          # a false green, and PascalCase quoted names are what Prisma and Drizzle emit.
+          ntok++; tk[ntok] = "Q"; tv[ntok] = v
+          continue
+        }
+        if (c ~ /[A-Za-z_]/) {
+          v = ""
+          while (i <= n) { c = substr(buf, i, 1); if (c !~ /[A-Za-z0-9_$]/) break; v = v c; i++ }
+          ntok++; tk[ntok] = "W"; tv[ntok] = tolower(v)
+          continue
+        }
+        if (c == ".") { ntok++; tk[ntok] = "D"; tv[ntok] = "."; i++; continue }
+        ntok++; tk[ntok] = "P"; tv[ntok] = c; i++
+      }
+      for (p = 1; p <= ntok; p++) {
+        if (tk[p] != "W") continue
+        if (tv[p] == "create") {
+          q = p + 1
+          if (tk[q] == "W" && (tv[q] == "global" || tv[q] == "local")) q++
+          if (tk[q] == "W" && (tv[q] == "temporary" || tv[q] == "temp" || tv[q] == "unlogged")) q++
+          if (!(tk[q] == "W" && tv[q] == "table")) continue
+          q++
+          if (tk[q] == "W" && tv[q] == "if" && tk[q+1] == "W" && tv[q+1] == "not" && tk[q+2] == "W" && tv[q+2] == "exists") q += 3
+          if (!parse_name(q)) continue
+          emit("C")
+        } else if (tv[p] == "alter") {
+          q = p + 1
+          if (!(tk[q] == "W" && tv[q] == "table")) continue
+          q++
+          if (tk[q] == "W" && tv[q] == "if" && tk[q+1] == "W" && tv[q+1] == "exists") q += 2
+          if (tk[q] == "W" && tv[q] == "only") q++
+          if (!parse_name(q)) continue
+          q = NAME_END
+          if (tk[q] == "W" && tv[q] == "enable" && tk[q+1] == "W" && tv[q+1] == "row" &&
+              tk[q+2] == "W" && tv[q+2] == "level" && tk[q+3] == "W" && tv[q+3] == "security") emit("R")
+        }
+      }
+    }
+  ' "$STRIPPED" > "$WORK_TOK"
+
+  # Read back as line triples. A delimiter a value can contain is not a delimiter, and a
+  # quoted identifier may contain any character.
+  c_n=0; r_n=0
+  while IFS= read -r kind && IFS= read -r sch && IFS= read -r tbl; do
+    case "$kind" in
+      C) c_n=$((c_n+1)); C_SCH[$c_n]="$sch"; C_TBL[$c_n]="$tbl" ;;
+      R) r_n=$((r_n+1)); R_SCH[$r_n]="$sch"; R_TBL[$r_n]="$tbl" ;;
+    esac
+  done < "$WORK_TOK"
+
+  i=1
+  while [ "$i" -le "$c_n" ]; do
+    found=0
+    j=1
+    while [ "$j" -le "$r_n" ]; do
+      if [ "${C_SCH[$i]}" = "${R_SCH[$j]}" ] && [ "${C_TBL[$i]}" = "${R_TBL[$j]}" ]; then found=1; break; fi
+      j=$((j+1))
+    done
+    if [ "$found" -eq 0 ]; then
+      fail "$(basename "$up"): table '${C_SCH[$i]}.${C_TBL[$i]}' created without 'enable row level security' in the same file"
+    fi
+    i=$((i+1))
+  done
+  unset C_SCH C_TBL R_SCH R_TBL
+
   # destructive statements outside a WHERE are tier-3 by regex (non-negotiable 4); flag, do not block
   if grep -qiE "^[[:space:]]*(drop[[:space:]]+table|truncate|delete[[:space:]]+from[[:space:]]+[a-z_.\"]+[[:space:]]*;)" "$STRIPPED"; then
     echo "note [$GATE] $(basename "$up"): destructive statement present; this migration is tier-3"
