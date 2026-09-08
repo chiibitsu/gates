@@ -73,18 +73,63 @@ TERMS_DEFAULT
 fi
 
 # ---------------------------------------------------------------------------
-# Path alias resolution, read from tsconfig.json. If tsconfig declares `paths` and this
-# cannot extract the `@/*` mapping, ALIAS_ROOT stays empty and every `@/...` specifier
-# resolves to nothing — which lands in the UNKNOWN branch below rather than being skipped.
-# The failure to understand the config surfaces as an unreadable import, which is what it is.
+# Path alias resolution, read from tsconfig.json.
+#
+# EVERY declared alias, not just `@/*`. The version that only understood `@/*` sent every
+# other alias down the "bare specifier" branch, where it was skipped as a published package —
+# so `import { key } from "~/lib/secret"` in a repo that maps `"~/*": ["./src/*"]` was a local
+# module the gate declared out of scope and never read. A false green, in the branch whose
+# whole job is deciding what counts as reachable.
+#
+# The parse is also GUARDED at every step. It used to be one unguarded
+# `x="$(grep ... | sed ... | head -1)"`, and under `set -e` with `pipefail` a grep that
+# matched nothing returned 1 through the pipeline and ended the gate on the spot — exit 1,
+# no output, before a single check ran. Any repo whose tsconfig declared paths without an
+# `@/*` key got a red with no reason in it, which reads as a broken gate rather than as the
+# gate saying anything. Every command substitution here ends in `|| true` for that reason.
 # ---------------------------------------------------------------------------
-ALIAS_ROOT=""
-if [ -f "$ROOT/tsconfig.json" ]; then
-  alias_target="$(grep -oE '"@/\*"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]+"' "$ROOT/tsconfig.json" 2>/dev/null | sed -E 's/.*"([^"]+)"$/\1/' | head -1)"
-  if [ -n "$alias_target" ]; then
-    alias_target="${alias_target%/\*}"
-    alias_target="${alias_target#./}"
-    ALIAS_ROOT="$ROOT/$alias_target"
+TSCONFIG="$ROOT/tsconfig.json"
+ALIASES="$WORK/aliases"
+: > "$ALIASES"
+BASE_DIR="$ROOT"
+if [ -f "$TSCONFIG" ]; then
+  base_url="$(sed -nE 's/.*"baseUrl"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TSCONFIG" 2>/dev/null | head -1 || true)"
+  base_url="${base_url#./}"; base_url="${base_url%/}"
+  if [ -n "$base_url" ] && [ "$base_url" != "." ]; then BASE_DIR="$ROOT/$base_url"; fi
+
+  # The `paths` object, isolated exactly rather than read line by line.
+  #
+  # Brace depth from the `"paths"` key captures the block whatever its layout; joining it to
+  # one line and cutting from `"paths": {` to the next `}` then leaves the alias body alone.
+  # That last cut is exact, not a guess: a tsconfig `paths` value is an array of strings, so
+  # the first `}` after the opening one is always its close.
+  #
+  # A line-anchored sed was here first, and it read a normal multi-line tsconfig correctly
+  # while parsing nothing at all out of a single-line one. The guard below turned that into
+  # an UNKNOWN rather than a false pass, which is the guard doing its job — but a legal
+  # tsconfig that makes the gate permanently red is still the gate being wrong about a tree
+  # it could have read.
+  awk '
+    !inp && /"paths"[[:space:]]*:/ { inp = 1 }
+    inp {
+      o = gsub(/\{/, "{"); c = gsub(/\}/, "}")
+      depth += o - c
+      print
+      if (started && depth <= 0) exit
+      if (o > 0) started = 1
+    }
+  ' "$TSCONFIG" > "$WORK/pathsblock" 2>/dev/null || true
+
+  tr -d '\n' < "$WORK/pathsblock" \
+    | sed -E 's/.*"paths"[[:space:]]*:[[:space:]]*\{//; s/\}.*//' > "$WORK/pathsbody" 2>/dev/null || true
+
+  # "<key>": [ "<first target>" — extracted by shape, from anywhere in the alias body, so the
+  # same code reads a pretty-printed tsconfig and a minified one.
+  grep -oE '"[^"]+"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]+"' "$WORK/pathsbody" 2>/dev/null \
+    | sed -E 's/"([^"]+)"[[:space:]]*:[[:space:]]*\[[[:space:]]*"([^"]+)"/\1\t\2/' > "$ALIASES" 2>/dev/null || true
+
+  if [ -s "$WORK/pathsbody" ] && [ ! -s "$ALIASES" ]; then
+    unknown "tsconfig.json declares compilerOptions.paths but this gate parsed no alias out of it — every aliased import below is therefore unresolved, and none of them will be called clean"
   fi
 fi
 
@@ -176,18 +221,52 @@ done < "$SEEDS"
 
 # Resolve one specifier. 0 = resolved (path on stdout), 1 = bare/third-party (out of scope),
 # 2 = local but resolves to no file (UNKNOWN).
+#
+# The three outcomes are the whole point. 1 is a claim — "this is a published package, not
+# this repo's source" — and it is only safe to make about a specifier that matches NO
+# declared alias. Anything that looks local and does not resolve is 2, never 1.
 resolve() { # $1 = specifier, $2 = importing file
-  local spec="$1" base ext cand
+  local spec="$1" bases="" matched=0 key target prefix t b ext cand found=""
   case "$spec" in
-    ./*|../*) base="$(dirname -- "$2")/$spec" ;;
-    @/*)      [ -n "$ALIAS_ROOT" ] || return 2; base="$ALIAS_ROOT/${spec#@/}" ;;
-    /*)       base="$ROOT$spec" ;;
-    *)        return 1 ;;
+    ./*|../*) bases="$(dirname -- "$2")/$spec"; matched=1 ;;
+    /*)       bases="$ROOT$spec"; matched=1 ;;
+    *)
+      while IFS="$(printf '\t')" read -r key target; do
+        [ -n "$key" ] || continue
+        case "$key" in
+          *\*)
+            prefix="${key%\*}"
+            case "$spec" in
+              "$prefix"*)
+                matched=1
+                t="${target%\*}"; t="${t#./}"
+                bases="$bases
+$BASE_DIR/$t${spec#"$prefix"}"
+                ;;
+            esac
+            ;;
+          *)
+            if [ "$spec" = "$key" ]; then
+              matched=1
+              t="${target#./}"
+              bases="$bases
+$BASE_DIR/$t"
+            fi
+            ;;
+        esac
+      done < "$ALIASES"
+      ;;
   esac
-  for ext in "" .ts .tsx .js .jsx .mjs .cjs /index.ts /index.tsx /index.js /index.jsx; do
-    cand="$base$ext"
-    if [ -f "$cand" ]; then printf '%s' "$cand"; return 0; fi
-  done
+  if [ "$matched" -ne 1 ]; then return 1; fi
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    for ext in "" .ts .tsx .js .jsx .mjs .cjs /index.ts /index.tsx /index.js /index.jsx; do
+      cand="$b$ext"
+      if [ -f "$cand" ]; then found="$cand"; break; fi
+    done
+    if [ -n "$found" ]; then break; fi
+  done <<< "$bases"
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
   return 2
 }
 

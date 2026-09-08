@@ -230,8 +230,12 @@ header, which is the honest account of what that scanner does not do.
   in a consumer repo comes from gitleaks or from GitHub's own secret scanning, not from
   here.
 - **The service-role gate reads imports with a regex, not a parser.** It follows literal
-  `from`, `import` and `require` specifiers, resolving `./`, `../`, `@/` (from tsconfig
-  `paths`) and absolute paths. A specifier that appears inside a comment or a string is
+  `from`, `import` and `require` specifiers, resolving `./`, `../`, absolute paths, and
+  **every alias declared in tsconfig `compilerOptions.paths`** — not just `@/*`. A specifier
+  matching no declared alias is treated as a published package; a specifier that matches one
+  and resolves to no file is UNKNOWN, never skipped. If the `paths` object is present and no
+  alias can be parsed out of it, that is UNKNOWN too. A specifier that appears inside a
+  comment or a string is
   followed as though it were real — over-inclusive, which costs a false red rather than a
   false green. What it cannot follow at all it calls UNKNOWN.
 - **The service-role gate does not look inside published packages.** A bare specifier
