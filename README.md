@@ -93,9 +93,9 @@ the placeholder with a real toolkit commit SHA:
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@45834a168690abb1164f1455bc47dbc2274bfc79  # v1.0.1
+    uses: chiibitsu/gates/.github/workflows/gates.yml@c3e3f49f91c3c39fc4a74d0ccf6bb8b15d70e3fd  # v1.0.2
     with:
-      gates_ref: 45834a168690abb1164f1455bc47dbc2274bfc79 # v1.0.1
+      gates_ref: c3e3f49f91c3c39fc4a74d0ccf6bb8b15d70e3fd # v1.0.2
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
@@ -173,7 +173,8 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 
 | Version | Commit | Use it? |
 |---|---|---|
-| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes ship in the next release. |
+| **v1.0.2** | `c3e3f49` | **Yes.** The first release with no known false green. Everything five review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught — thirteen of them. Read Known gaps before relying on it: this version still answers with only two values, clean or violation, and cannot say *I could not check*. |
+| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes shipped in v1.0.2. Superseded — move to v1.0.2. |
 | v1.0.0 | `39f78d6` | **No.** Four gates could pass a violation: migrations-lint read a commented-out `enable row level security` as evidence; actions-sha-pinned missed two legal YAML spellings of the `uses` key; required-files and nextjs-env skipped every git-backed check inside a linked worktree or submodule. It also deleted a `.gates-selftest` directory in the tree it was inspecting. The tag stays where it is — a published tag on a gate toolkit does not get moved — and this table is the record. |
 
 ## Known gaps
