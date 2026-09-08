@@ -12,6 +12,6 @@
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@25a1ca1f7ad7875138dd943657a5f7f1a3aa1809 # v1.0.3
+    uses: chiibitsu/gates/.github/workflows/gates.yml@e075a93923c744aba2dfdea4f2487200bcb4eb5f # v1.0.4
     with:
-      gates_ref: 25a1ca1f7ad7875138dd943657a5f7f1a3aa1809 # v1.0.3
+      gates_ref: e075a93923c744aba2dfdea4f2487200bcb4eb5f # v1.0.4

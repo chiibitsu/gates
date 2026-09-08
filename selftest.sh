@@ -15,7 +15,10 @@
 #      that SOMETHING in it fails; a shape that stopped being detected hides behind the
 #      others still failing. A case is one tree holding one shape, so it can only pass by
 #      that shape still being caught. Every false green a reviewer finds gets a case here.
-#   3. the TREE leg — run it against TARGET_TREE and require exit 0. A gate that rejects a
+#   3. the UNKNOWN leg — run it against every fixtures/<gate>/bad/unknown/<name> and require
+#      a RED exit that carries an UNKNOWN line and no FAIL line. "Could not check" must be
+#      as blocking as "found a violation" and must not be mistakable for one.
+#   4. the TREE leg — run it against TARGET_TREE and require exit 0. A gate that rejects a
 #      VALID form shows up only on this leg: the fixture model holds bad trees, so a false
 #      RED cannot be planted in one.
 #
@@ -40,6 +43,69 @@ FX="$HERE/fixtures"
 OUT="$(mktemp)"
 bad=0
 
+# ---------------------------------------------------------------------------
+# Do the gates that exist and the gates that are supposed to exist agree?
+#
+# The UNIVERSE is read from the system: whatever is in gates/. The SPEC is gates/MANIFEST.txt.
+# They are asserted against each other BY NAME, in BOTH directions, and neither is used to
+# filter the other — iterating "the manifest entries that have files" or "the files that are
+# in the manifest" would make a mismatch unobservable, which is the whole thing being
+# checked.
+#
+# Without this, deleting a gate file was invisible. The loop below read the directory, ran
+# one fewer gate, and printed "every gate was shown to fail" — a true sentence about a
+# smaller set, in a report whose reader has no way to know the set changed. The check and
+# its message have to cover the same ground, and here they did not.
+# ---------------------------------------------------------------------------
+MANIFEST="$HERE/gates/MANIFEST.txt"
+if [ ! -f "$MANIFEST" ]; then
+  echo "SELFTEST FAIL: gates/MANIFEST.txt is missing — there is nothing to check the gates directory against"
+  exit 1
+fi
+SPEC="$(mktemp)"; UNIVERSE="$(mktemp)"
+# No trap here. `trap ... EXIT` REPLACES the previous EXIT trap rather than adding to it, so
+# the one this file already sets further down would have silently dropped whatever was
+# registered here. Both files are removed by that single cleanup instead.
+sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$MANIFEST" \
+  | awk 'NF { print $1 }' | sort > "$SPEC"
+for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
+  n="$(basename "$g")"; echo "${n%.*}"
+done | sort > "$UNIVERSE"
+
+# Present on disk is not the same as present in a clone. required-files.txt used to carry
+# every gate path for exactly this check; those lines are gone now that MANIFEST.txt is the
+# single list of gate names, so the trackedness they were buying is bought here instead —
+# otherwise collapsing the duplicate would have quietly dropped a check with it.
+if git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py "$MANIFEST"; do
+    rp="${g#"$HERE"/}"
+    git -C "$HERE" ls-files --error-unmatch -- "$rp" >/dev/null 2>&1 || {
+      echo "SELFTEST FAIL: $rp is not git-tracked — it exists here and would not exist in a clone"
+      bad=1
+    }
+  done
+fi
+
+manifest_ok=1
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  grep -Fxq -- "$n" "$SPEC" || { echo "SELFTEST FAIL: gates/$n exists but is not named in gates/MANIFEST.txt"; manifest_ok=0; bad=1; }
+done < "$UNIVERSE"
+while IFS= read -r n; do
+  [ -n "$n" ] || continue
+  grep -Fxq -- "$n" "$UNIVERSE" || { echo "SELFTEST FAIL: gates/MANIFEST.txt names '$n' but there is no gates/$n.sh or gates/$n.py"; manifest_ok=0; bad=1; }
+done < "$SPEC"
+if [ "$manifest_ok" = 1 ]; then
+  echo "ok  gates/ and gates/MANIFEST.txt agree, both directions ($(grep -c . "$UNIVERSE") gates)"
+fi
+
+# The mode column, read from the same single list. selftest.sh does not carry gate names of
+# its own; a literal `check_secrets` in this file's control flow was a second enumeration
+# that nothing checked against the first.
+mode_of() { # $1 = gate name
+  sed -e 's/#.*//' "$MANIFEST" | awk -v g="$1" 'NF && $1 == g { print $2; found=1 } END { if (!found) print "MISSING" }'
+}
+
 echo "selftest: toolkit $HERE"
 echo "selftest: target  $TARGET"
 echo
@@ -59,7 +125,7 @@ stage() { # $1 = tree to check
   STAGE_DIR="$(mktemp -d "$1/.gates-selftest.XXXXXX")"
   cp "$HERE/gates/check_secrets.py" "$HERE/gates/check_references.py" "$STAGE_DIR/"
 }
-cleanup() { unstage; rm -f "$OUT"; }
+cleanup() { unstage; rm -f "$OUT" "$SPEC" "$UNIVERSE"; }
 trap cleanup EXIT
 
 # Run one gate against one tree. Echoes nothing; returns the gate's exit status.
@@ -75,11 +141,17 @@ run_gate() { # $1 = gate file, $2 = tree
 for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
   name="$(basename "$g")"
   gate="${name%.*}"
-  [ "$gate" = lib ] && continue
+  mode="$(mode_of "$gate")"
+  [ "$mode" = library ] && continue
+  if [ "$mode" = MISSING ]; then
+    # Already reported by the cross-check above; skip rather than test it under a mode
+    # this file would have to invent.
+    continue
+  fi
   fixture="$FX/$gate/bad"
 
   # ---- 1. the failure leg ----
-  if [ "$gate" = check_secrets ]; then
+  if [ "$mode" = selftest ]; then
     # Its own probes are the fixture. Run from a staging directory holding BOTH vendored
     # scripts: the redaction-drift comparison looks for check_references.py at
     # <repo>/scripts/ and reports itself SKIPPED when it is absent — run from gates/ it
@@ -139,7 +211,43 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
     done
   fi
 
-  # ---- 3. the tree leg ----
+  # ---- 3. the UNKNOWN leg ----
+  #
+  # "I could not check this" is a distinct outcome and needs its own proof. These fixtures
+  # must make the gate go RED — a gate that cannot check and says nothing is the false green
+  # this toolkit exists to refuse — while reporting NO violation, because a violation it did
+  # not find is not what happened. Both halves are asserted; requiring only the red would be
+  # satisfied by a gate that reported a phantom FAIL, which reads to a fixer as a bug in
+  # their code rather than a blind spot in the gate.
+  #
+  # Under bad/, like cases/, and for the same reason: published versions of this toolkit
+  # filter their own planted failures on the `fixtures/<gate>/bad/` prefix, and
+  # caller-smoke.yml runs a pinned release over this tree.
+  unknowns="$FX/$gate/bad/unknown"
+  if [ -d "$unknowns" ]; then
+    for u in "$unknowns"/*/; do
+      [ -d "$u" ] || continue
+      uname="$(basename "$u")"
+      run_gate "$g" "${u%/}"
+      rc=$?
+      n_unknown="$(grep -c '^UNKNOWN \[' "$OUT" || true)"
+      n_fail="$(grep -c '^FAIL \[' "$OUT" || true)"
+      if [ "$rc" -eq 0 ]; then
+        echo "SELFTEST FAIL: $gate went GREEN on unknown case '$uname' — it could not check and said so with a pass"
+        sed 's/^/    /' "$OUT"; bad=1
+      elif [ "$n_unknown" -eq 0 ]; then
+        echo "SELFTEST FAIL: $gate went red on unknown case '$uname' without printing an UNKNOWN line — the reader cannot tell a blind spot from a violation"
+        sed 's/^/    /' "$OUT"; bad=1
+      elif [ "$n_fail" -gt 0 ]; then
+        echo "SELFTEST FAIL: $gate reported $n_fail violation(s) on unknown case '$uname', which plants none — it is blaming the tree for its own blind spot"
+        sed 's/^/    /' "$OUT"; bad=1
+      else
+        echo "ok  $gate reports UNKNOWN (red, no violation) on '$uname'"
+      fi
+    done
+  fi
+
+  # ---- 4. the tree leg ----
   run_gate "$g" "$TARGET"
   rc=$?
   if [ "$rc" -ne 0 ]; then
