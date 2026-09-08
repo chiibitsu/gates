@@ -7,11 +7,33 @@
 # SHA. What it does name is not derivable — from v1.0.2 onward it is the previous release, but
 # v1.0.0 and v1.0.1 pinned untagged ancestors, and v1.0.1 labelled its untagged pin with its
 # own version number. So take the SHA you want from the Releases table in the README, never
-# from this line. The one below is v1.0.3, whose gates are correct and identical to the
-# current release's, though its own metadata names the wrong version.
+# from this line. The one below is the PREVIOUS release, and that sentence has been wrong here
+# once already — it named v1.0.3 while the line beneath it said v1.0.4 — which is why it now
+# describes the relationship rather than restating the version.
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@e075a93923c744aba2dfdea4f2487200bcb4eb5f # v1.0.4
+    uses: chiibitsu/gates/.github/workflows/gates.yml@7832ea67355f22a3e9077d061f1dd937cead905a # v1.1.0
     with:
-      gates_ref: e075a93923c744aba2dfdea4f2487200bcb4eb5f # v1.0.4
+      gates_ref: 7832ea67355f22a3e9077d061f1dd937cead905a # v1.1.0
+
+  # ── The draft-stage reviewer (Tier 2, not a gate) ────────────────────────────────────────
+  #
+  # Commented, and NOT because it is a placeholder. review.yml does not exist before v1.2.0, so
+  # pinning it at the SHA above — the previous release, which is what this template ships —
+  # would fail with a file-not-found on every run. A caller line that is broken by construction
+  # is worse than one that says why it is off.
+  #
+  # To turn it on: take the v1.2.0 SHA (or later) from the Releases table in the README, put it
+  # on the `uses:` line below and on both `gates` lines above, and uncomment. There is ONE SHA
+  # in this block — the other line is the secret mapping, and an earlier wording said "BOTH
+  # lines below", which would have had a careful reader overwrite the token with a commit hash.
+  # It needs a repository secret CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`.
+  #
+  # It runs ONLY while the pull request is a draft. On a ready PR the job reports `skipped`,
+  # which is an absence, not a pass — see AGENTS.md on accounting for a check that is not there.
+  #
+  # review:
+  #   uses: chiibitsu/gates/.github/workflows/review.yml@<v1.2.0-sha-from-the-releases-table>
+  #   secrets:
+  #     CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
