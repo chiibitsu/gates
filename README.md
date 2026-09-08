@@ -92,6 +92,28 @@ existed, deleting a gate was invisible — the run read the directory, tested on
 and printed *every gate was shown to fail*, which was true of a smaller set than the reader
 had any way to know about.
 
+### The draft-stage reviewer — Tier 2, and not a gate
+
+`.github/workflows/review.yml` is a reusable workflow that has a model read the diff against
+`REVIEW.md` **while the pull request is still a draft**, so findings arrive before anyone is
+asked to look. `REVIEW.md` at the repository root is what it reads: severity calibration, a nit
+cap, what not to report, the verification bar, and how to converge on re-review.
+
+**It is not a gate and must never be a required check.** Nothing about it is deterministic, it
+cannot be shown to fail on a fixture the way `selftest.sh` shows every gate failing, and
+`gates/MANIFEST.txt` deliberately does not list it. Its known-bad case is a procedure a person
+runs — `fixtures/review/bad/README.md` — whose result is evidence about one run, not a proof.
+
+Two details that are easy to get wrong:
+
+- **`REVIEW.md` is read by name in the prompt.** Anthropic's managed Code Review service picks
+  that file up from the repository root on its own; `anthropics/claude-code-action` does not. If
+  the file moves, the prompt moves with it.
+- **The tally is posted by the workflow, not by the model.** Every run ends with
+  `reviewed <sha>: N findings`, and when the model does not report a count the step posts
+  `UNKNOWN` and goes red. A reviewer that died silently is indistinguishable from a clean one,
+  so that case is made impossible rather than unlikely.
+
 ### UNKNOWN
 
 A gate can say three things. A checks UI has two colours.
@@ -172,13 +194,14 @@ To run it by hand:
 ./selftest.sh /path/to/your/repo     # defaults to this repo
 ```
 
-## The five per-repo config files
+## The six per-repo config files
 
-Four live in the repo being checked. The fifth belongs to the template, not here.
+Five live in the repo being checked. The sixth belongs to the template, not here.
 
 | File | Gate | What it is |
 |---|---|---|
 | `scripts/gates/required-files.txt` | required-files | one path per line; files must exist and be tracked, directories must exist |
+| `REVIEW.md` | review (Tier 2) | review-only instructions at the repository root: severity, nit cap, skip rules, always-checks, verification bar, convergence. Read by the managed Code Review service automatically, and by `review.yml` because its prompt names it |
 | `scripts/gates/service-role-terms.txt` | service-role | the identifiers whose presence in a module means that module can reach service-role, one per line. Absent file = a built-in list of the Supabase spellings. An **empty** file is a hard error: a term list that matches nothing is not a check |
 | `scripts/gates/denylist.txt` | nextjs-env | terms that must never appear in the repo, one per line, case-insensitive. Absent file = check skipped |
 | `.ci-allowed-refs` | check_references | deliberate reference exceptions in two sections: permanent above the `#!debt` marker line, promised-but-unbuilt below it. The debt section fails the run once a listed path starts existing, so entries get retired instead of outliving their reason. An **empty** file is a hard error — the marker line has to be there |
@@ -205,13 +228,14 @@ Four live in the repo being checked. The fifth belongs to the template, not here
 
 ## Releases
 
-The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.1.0` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
+The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.2.0` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
 
 A release's `CITATION.cff` names its own version — that is the part that must be right. v1.0.0 and v1.0.1 got it right, v1.0.2 and v1.0.3 did not, and v1.0.4 restores it. The regression is worth reading as evidence for the rule rather than as two mistakes: the correction to a version's metadata is *made by* a pull request, so it lands in a commit **after** the one being tagged, and tagging the merged head of the PR that still reports the previous version is one behind by construction. A release must declare its own version **before** it is tagged. A release's workflow pins cannot name that release, because a commit cannot contain its own future SHA. What they name instead is **not derivable**, so do not try: **from v1.0.2 onward they point at the previous release, and before that they pointed at untagged ancestors** — v1.0.0 pins `186ff05` and v1.0.1 pins `2428668`, neither of which carries any tag, and v1.0.1 labels its untagged pin with its own version number. **Take the SHA to pin from this table, never from the example in a checkout.** That is the whole reason this table exists.
 
 | Version | Commit | Use it? |
 |---|---|---|
-| **v1.1.0** | tag `v1.1.0` — resolve with `git rev-list -n1 v1.1.0`, or read it off the release page | **Yes — use this one.** Adds `service-role.sh`, the UNKNOWN outcome, and `gates/MANIFEST.txt` with a both-directions check against the `gates/` directory. Carries v1.0.2's known false green in `actions-sha-pinned.sh`, described below — that gate is unchanged. **Adopting this release can turn a consumer red on code that was green under v1.0.4**, because `service-role.sh` did not exist to check it. That is a finding, not a regression. |
+| **v1.2.0** | tag `v1.2.0` — resolve with `git rev-list -n1 v1.2.0`, or read it off the release page | **Yes — use this one.** Adds the draft-stage reviewer: `REVIEW.md`, `.github/workflows/review.yml`, and `fixtures/review/bad/`. **The gates are byte-identical to v1.1.0** — nothing that blocks changed, and a consumer that adopts this without wiring the reviewer gets exactly v1.1.0's behaviour. Carries v1.0.2's known false green in `actions-sha-pinned.sh`, described below. |
+| v1.1.0 | `7832ea6` | **Usable, and superseded by v1.2.0** — same six gates, no reviewer. Added `service-role.sh`, the UNKNOWN outcome, and `gates/MANIFEST.txt` with a both-directions check against the `gates/` directory. Adopting it can turn a consumer red on code that was green under v1.0.4, because `service-role.sh` did not exist to check it; that is a finding, not a regression. |
 | v1.0.4 | `e075a93` | **Usable, and superseded by v1.1.0** — five gates instead of six, so nothing checks whether the request path can reach the service-role secret. Its `CITATION.cff` names the version on its tag, which v1.0.0 and v1.0.1 also did and v1.0.2 and v1.0.3 did not. Gates byte-identical to v1.0.2 and v1.0.3, so it carries their one known false green, described below. |
 | v1.0.3 | `25a1ca1` | **Do not cite.** Its gates are correct and identical to v1.0.2's, so a pin at this SHA works. But its `CITATION.cff` says `1.0.2` and its caller template says `v1.0.2` — this tag reproduces the exact defect it was cut to fix. The cause is structural and is the useful part: the correction to a version's metadata is *made by* the pull request, so it lands in a commit **after** the one being tagged. Tagging the merged head of the PR that reports the previous version is guaranteed to be one behind. A release has to declare its own version **before** it is tagged, which is what v1.0.4 does. |
 | v1.0.2 | `c3e3f49` | **Usable, and superseded by v1.0.4** — same gates, wrong version metadata inside the tag. Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, reproducible: `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. The rule that produces it is stated once, in Known gaps below, and deliberately not paraphrased here — a first draft of this row paraphrased it and got the rule wrong in a different way than the gap section did, which is how two statements of one fact always end. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
@@ -229,6 +253,15 @@ header, which is the honest account of what that scanner does not do.
   working-tree mode, so history coverage
   in a consumer repo comes from gitleaks or from GitHub's own secret scanning, not from
   here.
+- **The draft-stage reviewer is not deterministic and is not proven by the selftest.** It is a
+  model reading a diff. The same change can produce differently-worded findings, and
+  `fixtures/review/bad/` is a manual procedure rather than a leg of `selftest.sh` — a leg that
+  "passed" would be asserting something it had not established. Treat its output as a second
+  reader, never as a check.
+- **This repository does not run the reviewer on its own pull requests yet.** `review.yml` ships
+  here and is called from consumer repositories; wiring a self-call is a separate change, so
+  until then the fixture procedure is the only thing that exercises it. Stated because a
+  reviewer nobody has run is a reviewer nobody has seen fail.
 - **The service-role gate reads imports with a regex, not a parser.** It follows literal
   `from`, `import` and `require` specifiers, resolving `./`, `../`, absolute paths, and
   **every alias declared in tsconfig `compilerOptions.paths`** — not just `@/*`. A specifier
