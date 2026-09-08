@@ -1,0 +1,9 @@
+# The step is a mutable tag. `./` appears only inside the comment. The gate used to drop any
+# line containing `./` ANYWHERE, so this reported clean — a comment deciding a supply-chain
+# check. Everything is decided from the VALUE now.
+name: ci
+on: [push]
+jobs:
+  x:
+    steps:
+      - uses: actions/checkout@v4 # prefer ./local-action where we can

@@ -1,0 +1,8 @@
+# `uses : x` is an ordinary `uses` mapping. A pattern anchored on the literal token `uses:`
+# matched nothing here and the mutable tag walked through.
+name: ci
+on: [push]
+jobs:
+  x:
+    steps:
+      - uses : actions/cache@v4

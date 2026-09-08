@@ -1,0 +1,21 @@
+name: caller-smoke
+# Uses this repo AS a consumer, so the reusable workflow is exercised rather than
+# assumed. An untested reusable workflow is a gate nobody has seen work — the same
+# defect the toolkit exists to refuse, one level up. It caught a real one on its first
+# run: github.job_workflow_sha resolved to nothing, and the job stopped instead of
+# silently checking out HEAD.
+#
+# Pinned at v1.0.0, deliberately a fixed commit and not the branch head, because that is
+# what a consumer does.
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    uses: chiibitsu/gates/.github/workflows/gates.yml@45834a168690abb1164f1455bc47dbc2274bfc79
+    with:
+      gates_ref: 45834a168690abb1164f1455bc47dbc2274bfc79 # v1.0.1

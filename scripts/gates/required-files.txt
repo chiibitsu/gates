@@ -1,0 +1,23 @@
+# One path per line. Files must exist and be tracked; directories must exist.
+# Add a line when something's absence has bitten once. Remove nothing without a reason
+# in the commit. This is the toolkit's own copy; every consumer repo keeps its own at
+# the same path, and that is where required-files.sh reads it from.
+README.md
+LICENSE
+CITATION.cff
+selftest.sh
+caller-template.yml
+.ci-allowed-refs
+.github/workflows/gates.yml
+.github/workflows/selftest.yml
+.github/workflows/caller-smoke.yml
+gates/lib.sh
+gates/actions-sha-pinned.sh
+gates/migrations-lint.sh
+gates/nextjs-env.sh
+gates/proxy-location.sh
+gates/required-files.sh
+gates/check_secrets.py
+gates/check_references.py
+scripts/gates/denylist.txt
+fixtures

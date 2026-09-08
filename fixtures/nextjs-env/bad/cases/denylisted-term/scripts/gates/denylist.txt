@@ -1,0 +1,5 @@
+# One shape: a repo with a NON-EMPTY denylist. The gate passed -F on top of a hardcoded -E,
+# so grep answered "conflicting matchers specified" and exited 2 on every denylist search.
+# The toolkit's own denylist held nothing but comments, so the selftest never took this path
+# and never saw that no repo with a denylist could go green.
+acmecorp

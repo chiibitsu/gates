@@ -1,0 +1,8 @@
+# A container action pinned by tag. Container actions are pinned by image digest —
+# docker://image@sha256:<64 hex> — and a tag is as mutable here as anywhere else.
+name: ci
+on: [push]
+jobs:
+  x:
+    steps:
+      - uses: docker://alpine:3.19

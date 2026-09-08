@@ -1,0 +1,33 @@
+name: selftest
+# This repo's own CI. Same command a consumer runs, pointed at this tree.
+on:
+  pull_request:
+  # Every branch. Limiting push to main leaves branch work with no gate until a PR
+  # exists.
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selftest-${{ github.ref }}
+  # PULL REQUESTS only. A superseded PR run is safe to cancel: its replacement scans
+  # base..head, which still covers every commit the cancelled run would have seen.
+  #
+  # A superseded PUSH run is not. Push A adds a credential, push B deletes it moments
+  # later and cancels A; B's range is A..B, whose patch contains the DELETION, and B's
+  # working tree is clean — so the credential is scanned by nobody while remaining
+  # fetchable in A. "The newer commit is what matters" is true for testing a tree and
+  # false for auditing history.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Prove every gate can fail, then run it on this tree
+        run: ./selftest.sh .

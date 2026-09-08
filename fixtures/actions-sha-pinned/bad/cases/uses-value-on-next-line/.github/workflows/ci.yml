@@ -1,0 +1,10 @@
+# Legal YAML: the block scalar value sits on the next line and GitHub runs it. The gate
+# reads one line at a time, so it cannot see `actions/checkout@v4` from the `uses:` line —
+# and it used to answer that by silently skipping the step. Skipping is a pass.
+name: ci
+on: [push]
+jobs:
+  x:
+    steps:
+      - uses:
+          actions/checkout@v4

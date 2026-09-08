@@ -1,0 +1,10 @@
+# A YAML flow mapping. GitHub runs this step exactly like the block form, but an anchor
+# that tolerated only a leading `-` and quotes never matched the key past the `{`, so the
+# mutable tag walked through. Fourth spelling of `uses` this gate has had to learn.
+name: ci
+on: [push]
+jobs:
+  x:
+    steps:
+      - {uses: actions/checkout@v4}
+      - {uses: actions/setup-node@main, with: {node-version: 22}}
