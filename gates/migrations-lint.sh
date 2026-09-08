@@ -62,12 +62,22 @@ for up in "$MIG"/*.sql; do
   down="${up%.sql}.down.sql"
   [ -f "$down" ] || fail "no rollback: $(basename "$up") needs $(basename "$down")"
   strip_sql_comments "$up" > "$STRIPPED"
-  # tables created here must enable RLS here
+  # tables created here must enable RLS here.
+  #
+  # THE SCHEMA QUALIFIER IS OPTIONAL AND MAY BE QUOTED SEPARATELY. `create table
+  # "public"."orders"` is one identifier per quoted part, and the pattern used to name only
+  # `public\.` unquoted — so on that spelling the leading `"?` swallowed the opening quote,
+  # `public` was read as the TABLE, and the RLS search below ran against a table that does not
+  # exist. Where a table genuinely named `public` had RLS, the file passed and `orders` was
+  # never checked at all: a FALSE GREEN. Where it did not, the violation named the wrong table:
+  # a red a fixer cannot act on. The qualifier is now matched generically (any schema, quoted
+  # or not) on both the create side and the alter side, which have to agree or the second
+  # check cannot find what the first one named.
   while IFS= read -r tbl; do
-    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?(public\.)?\"?${tbl}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
+    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?(\"?[a-z_][a-z0-9_]*\"?\.)?\"?${tbl}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
       fail "$(basename "$up"): table '$tbl' created without 'enable row level security' in the same file"
     fi
-  done < <(grep -ioE "create[[:space:]]+table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(public\.)?\"?[a-z_][a-z0-9_]*" "$STRIPPED" | sed -E 's/.*[ .]"?([a-z_][a-z0-9_]*)"?$/\1/i')
+  done < <(grep -ioE "create[[:space:]]+table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(\"?[a-z_][a-z0-9_]*\"?\.)?\"?[a-z_][a-z0-9_]*" "$STRIPPED" | sed -E 's/.*[ .]"?([a-z_][a-z0-9_]*)"?$/\1/i')
   # destructive statements outside a WHERE are tier-3 by regex (non-negotiable 4); flag, do not block
   if grep -qiE "^[[:space:]]*(drop[[:space:]]+table|truncate|delete[[:space:]]+from[[:space:]]+[a-z_.\"]+[[:space:]]*;)" "$STRIPPED"; then
     echo "note [$GATE] $(basename "$up"): destructive statement present; this migration is tier-3"

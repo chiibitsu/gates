@@ -209,11 +209,21 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
       cname="$(basename "$c")"
       run_gate "$g" "${c%/}"
       rc=$?
+      # THE RED IS NOT ENOUGH, and this leg used to accept it. A case fixture plants one
+      # violation and the claim printed is "catches case '<name>'" — but UNKNOWN is also red,
+      # so a gate that lost the ability to see the planted shape and merely tripped over a
+      # blind spot on the same tree passed this leg while the shape went undetected. That is
+      # an assertion narrower than its own message, in the code written to catch exactly
+      # that. The UNKNOWN leg below already asserts both halves; this one now does too.
+      n_fail="$(grep -c '^FAIL \[' "$OUT" || true)"
       if [ "$rc" -eq 0 ]; then
         echo "SELFTEST FAIL: $gate PASSED case '$cname' — that shape is no longer detected"
         sed 's/^/    /' "$OUT"; bad=1
       elif [ "$rc" -ne 1 ]; then
         echo "SELFTEST FAIL: $gate errored (exit $rc) on case '$cname' instead of reporting a violation"
+        sed 's/^/    /' "$OUT"; bad=1
+      elif [ "$n_fail" -eq 0 ]; then
+        echo "SELFTEST FAIL: $gate went red on case '$cname' without printing a FAIL line — the red is a blind spot, not the planted violation"
         sed 's/^/    /' "$OUT"; bad=1
       else
         echo "ok  $gate catches case '$cname'"

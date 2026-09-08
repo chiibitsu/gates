@@ -231,8 +231,34 @@ done < "$SEEDS"
 # The three outcomes are the whole point. 1 is a claim — "this is a published package, not
 # this repo's source" — and it is only safe to make about a specifier that matches NO
 # declared alias. Anything that looks local and does not resolve is 2, never 1.
+# "It matched no declared alias" and "it is a published package" are not the same sentence,
+# and resolve() used to print the second while only having checked the first. `@/lib/secret`
+# in a tree whose tsconfig declares some OTHER alias matches nothing here — and it cannot be
+# a package either: npm has no empty scope. The gate called it a dependency and skipped it,
+# so a request-path module importing it read as clean. Measured on a tree reaching
+# SUPABASE_SERVICE_ROLE_KEY: `ok [service-role]`, exit 0. A FALSE GREEN, from a classifier
+# whose claim was wider than its test — this repository's recurring defect, again, in the
+# branch that decides what is out of scope.
+#
+# So the claim is now tested. A specifier that is neither a declared alias nor a well-formed
+# package name is UNKNOWN: this gate does not know what it is, and will not call it clean.
+is_package_specifier() {
+  local sc nm
+  case "$1" in
+    @*/*)
+      sc="${1#@}"; sc="${sc%%/*}"
+      case "$sc" in ""|[!A-Za-z0-9]*) return 1 ;; esac
+      nm="${1#@*/}"
+      case "$nm" in ""|[!A-Za-z0-9]*) return 1 ;; esac
+      return 0 ;;
+    @*)           return 1 ;;   # a scope with no package under it
+    [A-Za-z0-9]*) return 0 ;;   # react, node:fs, @-less subpaths
+    *)            return 1 ;;   # ~/..., #internal/..., ./ and ../ never reach here
+  esac
+}
+
 resolve() { # $1 = specifier, $2 = importing file
-  local spec="$1" bases="" matched=0 key target prefix t b ext cand cdir found=""
+  local spec="$1" bases="" matched=0 key target prefix t b bb cands ext cand cdir found=""
   case "$spec" in
     ./*|../*) bases="$(dirname -- "$2")/$spec"; matched=1 ;;
     /*)       bases="$ROOT$spec"; matched=1 ;;
@@ -263,15 +289,42 @@ $BASE_DIR/$t"
       done < "$ALIASES"
       ;;
   esac
-  if [ "$matched" -ne 1 ]; then return 1; fi
+  if [ "$matched" -ne 1 ]; then
+    if is_package_specifier "$spec"; then return 1; fi
+    return 3
+  fi
   while IFS= read -r b; do
     [ -n "$b" ] || continue
+    # THE SPECIFIER'S EXTENSION IS THE EMITTED ONE, NOT THE SOURCE'S. Under
+    # `moduleResolution: nodenext` (and with `verbatimModuleSyntax`) TypeScript requires the
+    # import to name the file JavaScript will load — `./mod.mjs` — while the file on disk is
+    # `mod.mts`. The probe below only ever appended extensions, so it tested `mod.mjs.mts`
+    # and nothing else, resolved to no file, and reported UNKNOWN. A FALSE RED on the modern
+    # default resolution mode: the gate blocking a tree it simply could not spell.
+    #
+    # The mapping is TypeScript's own and is one-to-one: .mjs<-.mts, .cjs<-.cts, .js<-.ts|.tsx,
+    # .jsx<-.tsx. The emitted spelling is kept in the list as well, because a plain JS project
+    # has the .js on disk and both must resolve.
+    cands="$b"
+    case "$b" in
+      *.mjs) cands="$b
+${b%.mjs}.mts" ;;
+      *.cjs) cands="$b
+${b%.cjs}.cts" ;;
+      *.jsx) cands="$b
+${b%.jsx}.tsx" ;;
+      *.js)  cands="$b
+${b%.js}.ts
+${b%.js}.tsx" ;;
+    esac
+    while IFS= read -r bb; do
+    [ -n "$bb" ] || continue
     # .d.ts and friends included: `import type { Database } from "@/types/supabase"` against a
     # src/types/supabase.d.ts resolved to nothing, which this gate calls UNKNOWN — a permanent
     # blocking red on a perfectly ordinary line. The selftest cannot catch a false red (its own
     # note says the fixture model holds bad trees only), so it is fixed here on report.
     for ext in "" .ts .tsx .d.ts .mts .cts .js .jsx .mjs .cjs /index.ts /index.tsx /index.d.ts /index.js /index.jsx; do
-      cand="$b$ext"
+      cand="$bb$ext"
       # CANONICALISED, not merely tested for existence. Without this the resolved path keeps
       # whatever `..` the importer's specifier put in it, and TWO SPELLINGS OF ONE FILE ARE
       # TWO NODES. That cost two defects, both shipped in v1.1.0:
@@ -294,6 +347,8 @@ $BASE_DIR/$t"
         break
       fi
     done
+    if [ -n "$found" ]; then break; fi
+    done <<< "$cands"
     if [ -n "$found" ]; then break; fi
   done <<< "$bases"
   if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
@@ -374,6 +429,7 @@ while :; do
       0) printf '%s\t%s\n' "$file" "$target" >> "$EDGES"; enqueue "$target" ;;
       1) : ;;  # bare specifier: a published package, out of this gate's reach by design
       2) unknown "$(rel "$file") imports '$spec', which this gate could not resolve to a file — an unread module is not a clean one" ;;
+      3) unknown "$(rel "$file") imports '$spec', which matches no alias declared in tsconfig.json and is not a well-formed package name — this gate cannot say what it is, and will not call it a dependency to skip it" ;;
     esac
   done <<< "$specs"
 done

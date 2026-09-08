@@ -304,12 +304,24 @@ header, which is the honest account of what that scanner does not do.
 - **The service-role gate reads imports with a regex, not a parser.** It follows literal
   `from`, `import` and `require` specifiers, resolving `./`, `../`, absolute paths, and
   **every alias declared in tsconfig `compilerOptions.paths`** — not just `@/*`. A specifier
-  matching no declared alias is treated as a published package; a specifier that matches one
-  and resolves to no file is UNKNOWN, never skipped. If the `paths` object is present and no
-  alias can be parsed out of it, that is UNKNOWN too. A specifier that appears inside a
+  matching no declared alias is treated as a published package **only if it could be one**:
+  from v1.2.1 the claim is tested against npm's name shape, so `@/lib/secret` — no alias, and
+  no valid empty scope — is UNKNOWN rather than a dependency to skip. That was a false green
+  before. A specifier that matches an alias and resolves to no file is UNKNOWN, never skipped.
+  If the `paths` object is present and no alias can be parsed out of it, that is UNKNOWN too.
+  It also maps the **emitted** extension back to the source one (`./m.mjs` → `m.mts`, `.cjs`
+  → `.cts`, `.js` → `.ts`/`.tsx`), which `moduleResolution: nodenext` requires you to write
+  and which was a false red before v1.2.1. A specifier that appears inside a
   comment or a string is
   followed as though it were real — over-inclusive, which costs a false red rather than a
   false green. What it cannot follow at all it calls UNKNOWN.
+- **The service-role gate does not follow tsconfig `extends`.** Aliases are read from the
+  repo's own `tsconfig.json` only. TypeScript does not deep-merge `paths` — measured with
+  tsc 5.6.3: a child that declares `paths` REPLACES the base's object entirely, so a base's
+  `@/*` is already dead in that tree — but a child that declares `extends` and no `paths` of
+  its own inherits them, and this gate cannot see them. That case is UNKNOWN, not a pass.
+  `baseUrl` inherited from a base config is not read either, which makes alias targets fail
+  to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in.
 - **The service-role gate does not look inside published packages.** A bare specifier
   (`react`, `@supabase/ssr`) is out of scope by definition, so a third-party module that
   reads `process.env.SUPABASE_SECRET_KEY` itself is invisible to it. Repo source is what it
