@@ -89,13 +89,18 @@ fi
 # gate saying anything. Every command substitution here ends in `|| true` for that reason.
 # ---------------------------------------------------------------------------
 TSCONFIG="$ROOT/tsconfig.json"
+# Named in the UNKNOWN below only when it is actually there. The message said "no alias
+# declared in tsconfig.json" on a tree with no tsconfig.json at all, which sends a reader
+# to open a file that does not exist.
+if [ -f "$TSCONFIG" ]; then TSCONFIG_NOTE=" in tsconfig.json"; else TSCONFIG_NOTE=" (no tsconfig.json in this tree)"; fi
 ALIASES="$WORK/aliases"
 : > "$ALIASES"
 BASE_DIR="$ROOT"
+BASEURL_SET=0
 if [ -f "$TSCONFIG" ]; then
   base_url="$(sed -nE 's/.*"baseUrl"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TSCONFIG" 2>/dev/null | head -1 || true)"
   base_url="${base_url#./}"; base_url="${base_url%/}"
-  if [ -n "$base_url" ] && [ "$base_url" != "." ]; then BASE_DIR="$ROOT/$base_url"; fi
+  if [ -n "$base_url" ] && [ "$base_url" != "." ]; then BASE_DIR="$ROOT/$base_url"; BASEURL_SET=1; fi
 
   # The `paths` object, isolated exactly rather than read line by line.
   #
@@ -258,7 +263,7 @@ is_package_specifier() {
 }
 
 resolve() { # $1 = specifier, $2 = importing file
-  local spec="$1" bases="" matched=0 key target prefix t b bb cands ext cand cdir found=""
+  local spec="$1" bases="" matched=0 fallback=0 key target prefix t b bb cands ext cand cdir found=""
   case "$spec" in
     ./*|../*) bases="$(dirname -- "$2")/$spec"; matched=1 ;;
     /*)       bases="$ROOT$spec"; matched=1 ;;
@@ -287,6 +292,24 @@ $BASE_DIR/$t"
             ;;
         esac
       done < "$ALIASES"
+      # `baseUrl` WITHOUT A MATCHING `paths` ENTRY IS STILL A LOCAL IMPORT. This is Next.js's
+      # documented "Absolute Imports" shape: `baseUrl: "src"` alone makes `lib/supabase-admin`
+      # mean `src/lib/supabase-admin.ts`, with no alias declared anywhere. This gate PARSED
+      # that baseUrl — it is `BASE_DIR` for every alias target above — and then skipped the
+      # bare specifier as a published package. Measured, same file and same secret, twice:
+      #
+      #     import { admin } from "lib/supabase-admin";     ->  ok [service-role]   exit 0
+      #     import { admin } from "../lib/supabase-admin";  ->  FAIL x2             exit 1
+      #
+      # A FALSE GREEN selected by nothing but the spelling of the import. TypeScript resolves
+      # baseUrl-relative first and falls back to node_modules, so this does the same: probe
+      # under BASE_DIR, and if nothing is there the specifier really is a package (rc 1, not a
+      # red). Only when an explicit baseUrl was declared — without one there is no such shape
+      # to resolve, and every bare specifier is a dependency exactly as before.
+      if [ "$matched" -ne 1 ] && [ "$BASEURL_SET" = 1 ] && is_package_specifier "$spec"; then
+        matched=1; fallback=1
+        bases="$BASE_DIR/$spec"
+      fi
       ;;
   esac
   if [ "$matched" -ne 1 ]; then
@@ -305,17 +328,27 @@ $BASE_DIR/$t"
     # The mapping is TypeScript's own and is one-to-one: .mjs<-.mts, .cjs<-.cts, .js<-.ts|.tsx,
     # .jsx<-.tsx. The emitted spelling is kept in the list as well, because a plain JS project
     # has the .js on disk and both must resolve.
+    # THE SOURCE COMES FIRST, AND THE DECLARATION FILES ARE IN THE LIST. Verified with tsc:
+    # with both `admin.mts` and a stale emitted `admin.mjs` beside it, `import "./admin.mjs"`
+    # resolves to the .mts — so probing the emitted spelling first reads the stale artefact,
+    # and a secret added to the source reads as `ok`, exit 0. And `import type { X } from
+    # "./types.js"` against a `types.d.ts` type-checks clean under nodenext, which this list
+    # has to know or it re-opens the very `.d.ts` false red the extension list was widened to
+    # close one release ago.
     cands="$b"
     case "$b" in
-      *.mjs) cands="$b
-${b%.mjs}.mts" ;;
-      *.cjs) cands="$b
-${b%.cjs}.cts" ;;
-      *.jsx) cands="$b
-${b%.jsx}.tsx" ;;
-      *.js)  cands="$b
-${b%.js}.ts
-${b%.js}.tsx" ;;
+      *.mjs) cands="${b%.mjs}.mts
+${b%.mjs}.d.mts
+$b" ;;
+      *.cjs) cands="${b%.cjs}.cts
+${b%.cjs}.d.cts
+$b" ;;
+      *.jsx) cands="${b%.jsx}.tsx
+$b" ;;
+      *.js)  cands="${b%.js}.ts
+${b%.js}.tsx
+${b%.js}.d.ts
+$b" ;;
     esac
     while IFS= read -r bb; do
     [ -n "$bb" ] || continue
@@ -352,6 +385,10 @@ ${b%.js}.tsx" ;;
     if [ -n "$found" ]; then break; fi
   done <<< "$bases"
   if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  # A baseUrl probe that found nothing is not a failure to resolve a local module — it is
+  # TypeScript's own fallthrough to node_modules. Reporting UNKNOWN here would turn every
+  # `import React from "react"` red in any repo that declares a baseUrl.
+  if [ "$fallback" = 1 ]; then return 1; fi
   return 2
 }
 
@@ -410,13 +447,29 @@ while :; do
   #
   # gave `ok [service-role]`, exit 0, over a module reaching SUPABASE_SERVICE_ROLE_KEY, on a
   # tree the PREVIOUS version caught. The line pass finds ordinary imports with no window to
-  # swallow across; the flat pass finds the multi-line ones. Garbage the flat pass invents out
-  # of a swallowed span resolves as a bare specifier and is skipped, so the union only ever
-  # adds edges.
+  # swallow across; the flat pass finds the multi-line ones.
+  #
+  # AND THE GARBAGE IS DROPPED HERE, not left to be classified. The sentence that stood here
+  # said the invented spans "resolve as a bare specifier and are skipped, so the union only
+  # ever adds edges" — true only for as long as an unclassifiable specifier was silently
+  # skipped. The moment the classifier below began reporting UNKNOWN instead (the right
+  # change, made in the same commit), that sentence went false and every template literal in
+  # the tree became a blocking red. Measured, on a file that imports NOTHING:
+  #
+  #     const sql = `select id, owner from "${table}" where owner = $1`;
+  #     UNKNOWN [service-role] app/api/orders/route.ts imports '${table}' ...
+  #
+  # There is no action a fixer can take: the message names an import that does not exist and
+  # the only way to green is to delete the string. The characters filtered below cannot appear
+  # in any module specifier, so a candidate carrying one is an artefact of the extractor, not a
+  # claim about the tree. Note it was the LINE pass that produced it — the old sentence was
+  # wrong about which pass invents garbage as well as about what became of it.
   specs="$(
     { grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$file" 2>/dev/null
       grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$WORK/flat" 2>/dev/null
-    } | sed -E "s/.*['\"]([^'\"]+)['\"]\$/\1/" | sort -u
+    } | sed -E "s/.*['\"]([^'\"]+)['\"]\$/\1/" \
+      | grep -vE '[`{}<>;(),=|*]' \
+      | sort -u
   )"
   set -e
   while IFS= read -r spec; do
@@ -429,7 +482,7 @@ while :; do
       0) printf '%s\t%s\n' "$file" "$target" >> "$EDGES"; enqueue "$target" ;;
       1) : ;;  # bare specifier: a published package, out of this gate's reach by design
       2) unknown "$(rel "$file") imports '$spec', which this gate could not resolve to a file — an unread module is not a clean one" ;;
-      3) unknown "$(rel "$file") imports '$spec', which matches no alias declared in tsconfig.json and is not a well-formed package name — this gate cannot say what it is, and will not call it a dependency to skip it" ;;
+      3) unknown "$(rel "$file") imports '$spec', which matches no path alias this gate could read$TSCONFIG_NOTE and is not a well-formed package name — this gate cannot say what it is, and will not call it a dependency to skip it" ;;
     esac
   done <<< "$specs"
 done

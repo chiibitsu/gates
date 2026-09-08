@@ -39,6 +39,13 @@ jobs:
   # It runs ONLY while the pull request is a draft. On a ready PR the job reports `skipped`,
   # which is an absence, not a pass — account for it before flipping, as AGENTS.md says.
   #
+  # From v1.2.1 it also skips on pull requests FROM FORKS, and the pin below predates that.
+  # A fork PR gets no repository secrets, so the token expression is empty against a
+  # `required: true` declaration and the job is red for a reason having nothing to do with the
+  # code. Pinning the SHA on this line to v1.2.1 or later is what gets the skip; that is the
+  # same pin question the header above hands to the reader, named here so it is not discovered
+  # by a red run on someone's first outside contribution.
+  #
   # ONE SHA in this block, on the `uses:` line. The line under `secrets:` is a token mapping.
   review:
     # PERMISSIONS ARE THE CALLER'S TO GRANT. A called workflow can only narrow the token it is

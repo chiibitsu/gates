@@ -296,6 +296,12 @@ header, which is the honest account of what that scanner does not do.
   here and is called from consumer repositories; wiring a self-call is a separate change, so
   until then the fixture procedure is the only thing that exercises it. Stated because a
   reviewer nobody has run is a reviewer nobody has seen fail.
+- **The migrations-lint gate matches `create table` by regex.** It reads `unlogged`, `temp`
+  and `temporary` tables, a quoted or unquoted schema qualifier with or without whitespace
+  around the dot, and it carries the **schema and table together**: RLS on `archive.orders`
+  does not satisfy a `create table public.orders`, and an unqualified name is normalised to
+  `public`. What it does not read is a table created inside a function body, a `DO $$` block,
+  or by dynamic SQL.
 - **The service-role gate scans each module with newlines collapsed**, so that a statement
   spanning lines is seen as one — a multi-line `await import(` was a false green before
   v1.2.1. The cost is that a `//` comment runs into the code after it, so `import(` mentioned
@@ -309,9 +315,14 @@ header, which is the honest account of what that scanner does not do.
   no valid empty scope — is UNKNOWN rather than a dependency to skip. That was a false green
   before. A specifier that matches an alias and resolves to no file is UNKNOWN, never skipped.
   If the `paths` object is present and no alias can be parsed out of it, that is UNKNOWN too.
-  It also maps the **emitted** extension back to the source one (`./m.mjs` → `m.mts`, `.cjs`
-  → `.cts`, `.js` → `.ts`/`.tsx`), which `moduleResolution: nodenext` requires you to write
-  and which was a false red before v1.2.1. A specifier that appears inside a
+  It also maps the **emitted** extension back to the source one (`./m.mjs` → `m.mts`/`.d.mts`,
+  `.cjs` → `.cts`/`.d.cts`, `.js` → `.ts`/`.tsx`/`.d.ts`), which `moduleResolution: nodenext`
+  requires you to write and which was a false red before v1.2.1; the source is probed before
+  the emitted file, so a stale `.mjs` sitting beside its `.mts` cannot mask a secret added to
+  the source. A **`baseUrl` with no matching `paths` entry** — Next.js's documented "Absolute
+  Imports" — is resolved too: `import "lib/admin"` under `baseUrl: "src"` was skipped as a
+  published package while the same file spelled `../lib/admin` was caught, a false green
+  chosen by nothing but the spelling. A specifier that appears inside a
   comment or a string is
   followed as though it were real — over-inclusive, which costs a false red rather than a
   false green. What it cannot follow at all it calls UNKNOWN.
@@ -320,8 +331,16 @@ header, which is the honest account of what that scanner does not do.
   tsc 5.6.3: a child that declares `paths` REPLACES the base's object entirely, so a base's
   `@/*` is already dead in that tree — but a child that declares `extends` and no `paths` of
   its own inherits them, and this gate cannot see them. That case is UNKNOWN, not a pass.
-  `baseUrl` inherited from a base config is not read either, which makes alias targets fail
-  to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in.
+  A `baseUrl` **inherited from a base config** is not read either, which makes alias targets
+  fail to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in. A
+  baseUrl declared in the repo's own tsconfig *is* read, including for bare specifiers.
+- **The service-role gate drops extractor artefacts before classifying them.** A candidate
+  carrying a character no module specifier can contain — `` ` ``, `{`, `}`, `<`, `>`, `;`,
+  `(`, `)`, `,`, `=`, `|`, `*` — is discarded rather than reported. Without that, a template
+  literal in ordinary source (`` `select … from "${table}"` ``) became a blocking UNKNOWN
+  naming an import that does not exist, in a file that imports nothing, with no action a
+  fixer could take. The trade is the usual one in the other direction: a specifier genuinely
+  containing one of those characters is skipped silently.
 - **The service-role gate does not look inside published packages.** A bare specifier
   (`react`, `@supabase/ssr`) is out of scope by definition, so a third-party module that
   reads `process.env.SUPABASE_SECRET_KEY` itself is invisible to it. Repo source is what it

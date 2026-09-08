@@ -64,20 +64,52 @@ for up in "$MIG"/*.sql; do
   strip_sql_comments "$up" > "$STRIPPED"
   # tables created here must enable RLS here.
   #
-  # THE SCHEMA QUALIFIER IS OPTIONAL AND MAY BE QUOTED SEPARATELY. `create table
-  # "public"."orders"` is one identifier per quoted part, and the pattern used to name only
-  # `public\.` unquoted — so on that spelling the leading `"?` swallowed the opening quote,
-  # `public` was read as the TABLE, and the RLS search below ran against a table that does not
-  # exist. Where a table genuinely named `public` had RLS, the file passed and `orders` was
-  # never checked at all: a FALSE GREEN. Where it did not, the violation named the wrong table:
-  # a red a fixer cannot act on. The qualifier is now matched generically (any schema, quoted
-  # or not) on both the create side and the alter side, which have to agree or the second
-  # check cannot find what the first one named.
-  while IFS= read -r tbl; do
-    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?(\"?[a-z_][a-z0-9_]*\"?\.)?\"?${tbl}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
-      fail "$(basename "$up"): table '$tbl' created without 'enable row level security' in the same file"
+  # THE SCHEMA QUALIFIER IS PART OF THE TABLE'S IDENTITY AND IS CARRIED THROUGH. Three
+  # spellings had to be reconciled, and getting two of them right while dropping the third
+  # cost a false green:
+  #
+  #   - `create table "public"."orders"` is one identifier per quoted part. The pattern used
+  #     to name only `public\.` unquoted, so the leading `"?` swallowed the opening quote and
+  #     `public` was read as the TABLE. Where a table genuinely named `public` had RLS the
+  #     file PASSED and `orders` was never checked; where it did not, the violation named the
+  #     wrong table — a red a fixer cannot act on.
+  #   - Fixing that by matching ANY schema generically on both sides, while the create side
+  #     still discarded the schema, made the check assert only "SOME table called orders, in
+  #     SOME schema, has RLS" — under a message naming one specific table. Measured:
+  #     `create table public.orders` + `alter table archive.orders enable row level security`
+  #     went from red to `ok`, over a state PostgreSQL 16 accepts and in which public.orders
+  #     really is unprotected. Two schemas holding a same-named table is an ordinary layout.
+  #     A widened matcher under an unwidened message is this repository's recurring defect,
+  #     introduced here in the very commit that removed another instance of it.
+  #   - So the pair travels together. Unqualified is normalised to `public`, which is what an
+  #     unqualified name resolves to under the default search_path, and an unqualified ALTER
+  #     is therefore accepted only for a table created in `public`.
+  #
+  # `unlogged` and `temp`/`temporary` tables are matched too. They were invisible to
+  # `create[[:space:]]+table`, so an `create unlogged table orders` with no RLS anywhere was
+  # never checked at all — `ok`, exit 0. RLS applies to unlogged tables; verified on
+  # PostgreSQL 16. Whitespace around the qualifier dot (`public . orders`, which Postgres
+  # accepts) is matched for the same reason: a spelling the gate cannot read is a table the
+  # gate does not check.
+  while IFS="$(printf '\t')" read -r sch tbl; do
+    [ -n "$tbl" ] || continue
+    if [ "$sch" = "public" ]; then
+      qual="(\"?public\"?[[:space:]]*\.[[:space:]]*)?"
+    else
+      qual="\"?${sch}\"?[[:space:]]*\.[[:space:]]*"
     fi
-  done < <(grep -ioE "create[[:space:]]+table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(\"?[a-z_][a-z0-9_]*\"?\.)?\"?[a-z_][a-z0-9_]*" "$STRIPPED" | sed -E 's/.*[ .]"?([a-z_][a-z0-9_]*)"?$/\1/i')
+    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?${qual}\"?${tbl}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
+      fail "$(basename "$up"): table '$sch.$tbl' created without 'enable row level security' in the same file"
+    fi
+  done < <(
+    # Lowercased with `tr` before any sed runs, so no step needs a case-insensitive sed flag.
+    # `s///i` is a GNU extension and this repository has already been bitten once by a GNU-only
+    # regex feature silently matching nothing on BSD (`\s`, 18 occurrences, fixed in v1.2.1).
+    grep -ioE "create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(\"?[a-z_][a-z0-9_]*\"?[[:space:]]*\.[[:space:]]*)?\"?[a-z_][a-z0-9_]*" "$STRIPPED" \
+      | tr '[:upper:]' '[:lower:]' \
+      | sed -E 's/"//g; s/[[:space:]]*\.[[:space:]]*/./; s/^create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?//' \
+      | awk -F. 'NF==2 {print $1"\t"$2; next} {print "public\t"$1}'
+  )
   # destructive statements outside a WHERE are tier-3 by regex (non-negotiable 4); flag, do not block
   if grep -qiE "^[[:space:]]*(drop[[:space:]]+table|truncate|delete[[:space:]]+from[[:space:]]+[a-z_.\"]+[[:space:]]*;)" "$STRIPPED"; then
     echo "note [$GATE] $(basename "$up"): destructive statement present; this migration is tier-3"
