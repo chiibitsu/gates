@@ -298,10 +298,13 @@ header, which is the honest account of what that scanner does not do.
   reviewer nobody has run is a reviewer nobody has seen fail.
 - **The migrations-lint gate matches `create table` by regex.** It reads `unlogged`, `temp`
   and `temporary` tables, a quoted or unquoted schema qualifier with or without whitespace
-  around the dot, and it carries the **schema and table together**: RLS on `archive.orders`
-  does not satisfy a `create table public.orders`, and an unqualified name is normalised to
-  `public`. What it does not read is a table created inside a function body, a `DO $$` block,
-  or by dynamic SQL.
+  around the dot, a quoted identifier containing a space or a dot, and an optional database
+  qualifier — and it carries the **schema and table together**: RLS on `archive.orders` does
+  not satisfy a `create table public.orders`, and an unqualified name is normalised to
+  `public`. It reads a `create table` inside a function body, inside a `DO $$` block, and
+  inside an `execute '…'` string, and reds on all three — measured; the sentence that used to
+  stand here said it read none of them, which was false in every clause. What it genuinely
+  cannot read is a name assembled at runtime: `execute format('create table %I …')`.
 - **The service-role gate scans each module with newlines collapsed**, so that a statement
   spanning lines is seen as one — a multi-line `await import(` was a false green before
   v1.2.1. The cost is that a `//` comment runs into the code after it, so `import(` mentioned
@@ -317,12 +320,16 @@ header, which is the honest account of what that scanner does not do.
   If the `paths` object is present and no alias can be parsed out of it, that is UNKNOWN too.
   It also maps the **emitted** extension back to the source one (`./m.mjs` → `m.mts`/`.d.mts`,
   `.cjs` → `.cts`/`.d.cts`, `.js` → `.ts`/`.tsx`/`.d.ts`), which `moduleResolution: nodenext`
-  requires you to write and which was a false red before v1.2.1; the source is probed before
-  the emitted file, so a stale `.mjs` sitting beside its `.mts` cannot mask a secret added to
-  the source. A **`baseUrl` with no matching `paths` entry** — Next.js's documented "Absolute
-  Imports" — is resolved too: `import "lib/admin"` under `baseUrl: "src"` was skipped as a
-  published package while the same file spelled `../lib/admin` was caught, a false green
-  chosen by nothing but the spelling. A specifier that appears inside a
+  requires you to write and which was a false red before v1.2.1. Ordering is
+  **implementation before declaration**, in both the extension list and the emitted→source
+  map: a stale `.mjs` beside its `.mts` cannot mask a secret added to the source, and a
+  hand-written `.d.ts` beside a `.js` cannot stand in for the module Node actually loads. A
+  declaration file is what TypeScript resolves to and is never what runs in the request path. A **`baseUrl` with no matching `paths` entry** — Next.js's documented "Absolute
+  Imports" — is resolved too: `import "lib/admin"` was skipped as a published package while
+  the same file spelled `../lib/admin` was caught, a false green chosen by nothing but the
+  spelling. It arms on the **presence of the key**, not its value: the first version tested
+  the value and so missed `"baseUrl": "."`, which is the spelling in Next.js's own docs and
+  the one `create-next-app` ships. A specifier that appears inside a
   comment or a string is
   followed as though it were real — over-inclusive, which costs a false red rather than a
   false green. What it cannot follow at all it calls UNKNOWN.
@@ -334,13 +341,15 @@ header, which is the honest account of what that scanner does not do.
   A `baseUrl` **inherited from a base config** is not read either, which makes alias targets
   fail to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in. A
   baseUrl declared in the repo's own tsconfig *is* read, including for bare specifiers.
-- **The service-role gate drops extractor artefacts before classifying them.** A candidate
-  carrying a character no module specifier can contain — `` ` ``, `{`, `}`, `<`, `>`, `;`,
-  `(`, `)`, `,`, `=`, `|`, `*` — is discarded rather than reported. Without that, a template
-  literal in ordinary source (`` `select … from "${table}"` ``) became a blocking UNKNOWN
-  naming an import that does not exist, in a file that imports nothing, with no action a
-  fixer could take. The trade is the usual one in the other direction: a specifier genuinely
-  containing one of those characters is skipped silently.
+- **The service-role gate drops one extractor artefact before classifying it: `${`.** A
+  template literal in ordinary source (`` `select … from "${table}"` ``) otherwise became a
+  blocking UNKNOWN naming an import that does not exist, in a file that imports nothing, with
+  no action a fixer could take. The filter is deliberately just that one shape. A wider set —
+  every character "no module specifier can contain" — was tried and reverted: the extractor's
+  swallow does not only invent garbage, it can swallow a **real** import into it, and a wide
+  filter turned two reproduced reds into silent greens (a real import on the same line as a
+  string ending in `from "`, and a resolvable path containing a Next.js route group,
+  `../lib/(group)/admin`). Everything that is not `${` is still classified and reported.
 - **The service-role gate does not look inside published packages.** A bare specifier
   (`react`, `@supabase/ssr`) is out of scope by definition, so a third-party module that
   reads `process.env.SUPABASE_SECRET_KEY` itself is invisible to it. Repo source is what it

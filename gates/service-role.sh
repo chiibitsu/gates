@@ -100,7 +100,21 @@ BASEURL_SET=0
 if [ -f "$TSCONFIG" ]; then
   base_url="$(sed -nE 's/.*"baseUrl"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TSCONFIG" 2>/dev/null | head -1 || true)"
   base_url="${base_url#./}"; base_url="${base_url%/}"
-  if [ -n "$base_url" ] && [ "$base_url" != "." ]; then BASE_DIR="$ROOT/$base_url"; BASEURL_SET=1; fi
+  if [ -n "$base_url" ] && [ "$base_url" != "." ]; then BASE_DIR="$ROOT/$base_url"; fi
+  # ARMED ON THE KEY'S PRESENCE, NOT ON ITS VALUE. The first version of the baseUrl fallback
+  # armed on `[ -n "$base_url" ] && [ "$base_url" != "." ]` — the same condition that decides
+  # whether BASE_DIR moves — and `"baseUrl": "."` is the spelling in Next.js's own Absolute
+  # Imports documentation and the one create-next-app ships. So the fallback did not arm on
+  # the commonest spelling, and the false green it was written to close stayed open there:
+  #
+  #     import { admin } from "lib/supabase-admin";     ->  ok    exit 0
+  #     import { admin } from "../lib/supabase-admin";  ->  FAIL  exit 1
+  #
+  # Identical to the reproduction in the commit that claimed to fix it, on a different value
+  # of the same key — and the shipped fixture used "src", so the selftest was green over the
+  # half that worked. BASE_DIR is already $ROOT when the value is "." or "./", so nothing else
+  # needs to change: the key being there is the whole condition.
+  if grep -q '"baseUrl"' "$TSCONFIG" 2>/dev/null; then BASEURL_SET=1; fi
 
   # The `paths` object, isolated exactly rather than read line by line.
   #
@@ -335,20 +349,31 @@ $BASE_DIR/$t"
     # "./types.js"` against a `types.d.ts` type-checks clean under nodenext, which this list
     # has to know or it re-opens the very `.d.ts` false red the extension list was widened to
     # close one release ago.
+    #
+    # AND THE DECLARATION COMES LAST, which the first version of this list got backwards. With
+    # a `.js` module and a hand-written `.d.ts` beside it, probing the declaration first
+    # resolved to a file that BY CONSTRUCTION cannot hold a secret, and the module Node
+    # actually loads was never read. Measured: `lib/admin.js` reaching
+    # SUPABASE_SERVICE_ROLE_KEY with a `lib/admin.d.ts` next to it gave `ok`, exit 0 — and
+    # deleting the .d.ts turned the same tree red, which is the sidecar doing the hiding.
+    # `tsc --traceResolution` does prefer the declaration, but that is TypeScript answering
+    # "where are the types"; this gate asks "what code runs in the request path", and a
+    # declaration file is never that answer. Last still closes the false red above, because
+    # that case has no implementation file to find.
     cands="$b"
     case "$b" in
       *.mjs) cands="${b%.mjs}.mts
-${b%.mjs}.d.mts
-$b" ;;
+$b
+${b%.mjs}.d.mts" ;;
       *.cjs) cands="${b%.cjs}.cts
-${b%.cjs}.d.cts
-$b" ;;
+$b
+${b%.cjs}.d.cts" ;;
       *.jsx) cands="${b%.jsx}.tsx
 $b" ;;
       *.js)  cands="${b%.js}.ts
 ${b%.js}.tsx
-${b%.js}.d.ts
-$b" ;;
+$b
+${b%.js}.d.ts" ;;
     esac
     while IFS= read -r bb; do
     [ -n "$bb" ] || continue
@@ -356,7 +381,11 @@ $b" ;;
     # src/types/supabase.d.ts resolved to nothing, which this gate calls UNKNOWN — a permanent
     # blocking red on a perfectly ordinary line. The selftest cannot catch a false red (its own
     # note says the fixture model holds bad trees only), so it is fixed here on report.
-    for ext in "" .ts .tsx .d.ts .mts .cts .js .jsx .mjs .cjs /index.ts /index.tsx /index.d.ts /index.js /index.jsx; do
+    # Implementations before declarations here too, and for the same reason as the `cands`
+    # note above: `.d.ts` sat ahead of `.js`, so an extensionless `"../lib/admin"` against a
+    # `lib/admin.js` with a `lib/admin.d.ts` beside it resolved to the declaration. That one
+    # is older than this release; the fix for the ordering above is the fix for this.
+    for ext in "" .ts .tsx .mts .cts .js .jsx .mjs .cjs .d.ts .d.mts .d.cts /index.ts /index.tsx /index.js /index.jsx /index.d.ts; do
       cand="$bb$ext"
       # CANONICALISED, not merely tested for existence. Without this the resolved path keeps
       # whatever `..` the importer's specifier put in it, and TWO SPELLINGS OF ONE FILE ARE
@@ -460,15 +489,30 @@ while :; do
   #     UNKNOWN [service-role] app/api/orders/route.ts imports '${table}' ...
   #
   # There is no action a fixer can take: the message names an import that does not exist and
-  # the only way to green is to delete the string. The characters filtered below cannot appear
-  # in any module specifier, so a candidate carrying one is an artefact of the extractor, not a
-  # claim about the tree. Note it was the LINE pass that produced it — the old sentence was
-  # wrong about which pass invents garbage as well as about what became of it.
+  # the only way to green is to delete the string. Note it was the LINE pass that produced it —
+  # the old sentence was wrong about which pass invents garbage as well as about what became
+  # of it.
+  #
+  # THE FILTER IS `${` AND NOTHING ELSE, and the first version of it was far wider — every
+  # candidate carrying a character "no module specifier can contain". That set turned two REAL
+  # imports into silent skips, which is worse than the false red it was removing, because the
+  # swallow does not only invent garbage: it can swallow a real import INTO the garbage.
+  # Measured, both against the previous revision, which reported them:
+  #
+  #     const label = "imported from "; import { admin } from "../lib/admin";
+  #       -> the whole span became one candidate, dropped; lib/admin.ts never walked. `ok`.
+  #     import { admin } from "../lib/(group)/admin";
+  #       -> a resolvable file whose path holds a Next.js route group, dropped. `ok`.
+  #
+  # The first of those is `fixtures/service-role/bad/cases/string-ending-in-from/` with the
+  # newline removed — one character from the fixture that exists to catch exactly it.
+  # `${` is the whole artefact: it is the only shape the extractor produces that CANNOT be a
+  # path, and dropping it leaves everything else to be classified and reported as before.
   specs="$(
     { grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$file" 2>/dev/null
       grep -oE "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" -- "$WORK/flat" 2>/dev/null
     } | sed -E "s/.*['\"]([^'\"]+)['\"]\$/\1/" \
-      | grep -vE '[`{}<>;(),=|*]' \
+      | grep -vE '[$][{]' \
       | sort -u
   )"
   set -e

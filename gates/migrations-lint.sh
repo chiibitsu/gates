@@ -93,22 +93,58 @@ for up in "$MIG"/*.sql; do
   # gate does not check.
   while IFS="$(printf '\t')" read -r sch tbl; do
     [ -n "$tbl" ] || continue
+    # ESCAPED BEFORE INTERPOLATION. A quoted identifier can now carry any character, and both
+    # halves are pasted straight into an ERE — `create table public."order.items"` would
+    # otherwise build a pattern whose `.` matches any character and so accepts RLS on a table
+    # that is not this one. A matcher wider than the name it was given.
+    ere_escape='s/[.*+?^$(){}|]/\\&/g;s/\[/\\[/g;s/\]/\\]/g'
+    sch_re="$(printf '%s' "$sch" | sed -E "$ere_escape")"
+    tbl_re="$(printf '%s' "$tbl" | sed -E "$ere_escape")"
+    # The optional DATABASE qualifier. `create table mydb.public.orders` is accepted by
+    # PostgreSQL, and the create side now reads it correctly (schema `public`, table `orders`)
+    # — but the ALTER side did not admit the `mydb.` prefix, so the matching
+    # `alter table mydb.public.orders enable row level security` in the same file did not
+    # match and a COMPLIANT file went red. Half a fix is a red a fixer cannot act on.
+    dbq="((\"[^\"]*\"|[a-z_][a-z0-9_]*)[[:space:]]*\.[[:space:]]*)?"
     if [ "$sch" = "public" ]; then
-      qual="(\"?public\"?[[:space:]]*\.[[:space:]]*)?"
+      qual="(${dbq}\"?public\"?[[:space:]]*\.[[:space:]]*)?"
     else
-      qual="\"?${sch}\"?[[:space:]]*\.[[:space:]]*"
+      qual="${dbq}\"?${sch_re}\"?[[:space:]]*\.[[:space:]]*"
     fi
-    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?${qual}\"?${tbl}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
+    # `ONLY` is valid PostgreSQL and is what pg_dump emits, so a table WITH RLS was reported as
+    # having none without it.
+    if ! grep -qiE "alter[[:space:]]+table[[:space:]]+(if[[:space:]]+exists[[:space:]]+)?(only[[:space:]]+)?${qual}\"?${tbl_re}\"?[[:space:]]+enable[[:space:]]+row[[:space:]]+level[[:space:]]+security" "$STRIPPED"; then
       fail "$(basename "$up"): table '$sch.$tbl' created without 'enable row level security' in the same file"
     fi
   done < <(
     # Lowercased with `tr` before any sed runs, so no step needs a case-insensitive sed flag.
     # `s///i` is a GNU extension and this repository has already been bitten once by a GNU-only
     # regex feature silently matching nothing on BSD (`\s`, 18 occurrences, fixed in v1.2.1).
-    grep -ioE "create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(\"?[a-z_][a-z0-9_]*\"?[[:space:]]*\.[[:space:]]*)?\"?[a-z_][a-z0-9_]*" "$STRIPPED" \
+    grep -ioE "create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?(\"[^\"]*\"|[a-z_][a-z0-9_]*)([[:space:]]*\.[[:space:]]*(\"[^\"]*\"|[a-z_][a-z0-9_]*)){0,2}" "$STRIPPED" \
       | tr '[:upper:]' '[:lower:]' \
-      | sed -E 's/"//g; s/[[:space:]]*\.[[:space:]]*/./; s/^create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?//' \
-      | awk -F. 'NF==2 {print $1"\t"$2; next} {print "public\t"$1}'
+      | sed -E 's/^create[[:space:]]+((global|local)[[:space:]]+)?((temporary|temp|unlogged)[[:space:]]+)?table[[:space:]]+(if[[:space:]]+not[[:space:]]+exists[[:space:]]+)?//' \
+      | awk '
+          # Split on dots OUTSIDE quotes, so `"order items"` survives the space and `"a.b"`
+          # survives the dot. A blind `awk -F.` read `mydb.public.orders` as schema `mydb`,
+          # table `public` and reported a violation naming a table that does not exist, over a
+          # file that was compliant — the same "red a fixer cannot act on" this gate was fixed
+          # for one release ago, reintroduced by the qualifier that fixed it.
+          {
+            n = 0; cur = ""; inq = 0
+            for (i = 1; i <= length($0); i++) {
+              c = substr($0, i, 1)
+              if (c == "\"") { inq = !inq; continue }
+              if (c == "." && !inq) { part[++n] = cur; cur = ""; continue }
+              cur = cur c
+            }
+            part[++n] = cur
+            for (i = 1; i <= n; i++) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", part[i]) }
+            # The last two components are schema and table; anything before them is the
+            # database, which PostgreSQL accepts and which names no schema.
+            if (n >= 2) print part[n-1] "\t" part[n]
+            else        print "public\t" part[n]
+          }
+        '
   )
   # destructive statements outside a WHERE are tier-3 by regex (non-negotiable 4); flag, do not block
   if grep -qiE "^[[:space:]]*(drop[[:space:]]+table|truncate|delete[[:space:]]+from[[:space:]]+[a-z_.\"]+[[:space:]]*;)" "$STRIPPED"; then

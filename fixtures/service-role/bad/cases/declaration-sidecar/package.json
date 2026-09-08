@@ -1,0 +1,1 @@
+{ "name": "fixture-declaration-sidecar", "type": "module", "dependencies": { "next": "15.0.0" } }
