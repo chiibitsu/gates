@@ -1,0 +1,29 @@
+# The SPEC half of "what gates exist". gates/ is the universe, read from the system; this
+# file names what must be present. selftest.sh asserts the two agree BY NAME, in BOTH
+# directions, and neither list is used to filter the other — so a gate deleted from gates/
+# fails here instead of quietly shrinking the run, and a name written here with no file
+# behind it fails too.
+#
+# Deleting a gate file used to be invisible: selftest iterated the directory, found one
+# fewer gate, tested it, and printed "every gate was shown to fail" — true of the gates that
+# remained, and read by everyone as true of the gates that were supposed to be there.
+#
+# Column 2 is how the gate's failure leg is proven, and it lives here so that gate names are
+# written down in exactly ONE place. selftest.sh used to carry `check_secrets` and `lib` as
+# literals in its own control flow, which made it a second enumeration nobody was checking
+# against this one.
+#
+#   fixture  — prove it fails by running it against fixtures/<gate>/bad
+#   selftest — the gate proves itself (--selftest); it has no fixture tree
+#   library  — not a gate; sourced by the others and never run alone
+#
+# <gate>              <mode>
+lib                   library
+actions-sha-pinned    fixture
+check_references      fixture
+check_secrets         selftest
+migrations-lint       fixture
+nextjs-env            fixture
+proxy-location        fixture
+required-files        fixture
+service-role          fixture

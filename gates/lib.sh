@@ -63,7 +63,36 @@ clean_list_line() {
 }
 FAILS=0
 fail() { echo "FAIL [$GATE] $*"; FAILS=$((FAILS+1)); }
+UNKNOWNS=0
+# "I could not check this" — the answer a gate must be able to give, and the one it must
+# never give quietly.
+#
+# There is NO third colour. A GitHub Actions check run is green or it is not; `exit 2` does
+# not buy a neutral state, and a `::warning` annotation leaves the run green. So UNKNOWN is
+# RED, the same red as a violation, and the distinction between "I looked and found a
+# problem" and "I could not look" lives entirely in this line and in the annotation — never
+# in the colour, and never in the exit code.
+#
+# Exit 1, not 2, on purpose. selftest.sh's failure leg reads a non-1 exit as the gate
+# ERRORING rather than reporting, and lib.sh already spends 2 on "no root given". Reusing 2
+# here would have made an honest UNKNOWN indistinguishable from a broken invocation, in the
+# one file whose job is telling those apart.
+unknown() {
+  echo "UNKNOWN [$GATE] $*"
+  # ::error, never ::warning. A warning annotation is yellow text on a green run, and a
+  # green run is exactly what "could not check" must not produce.
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::error title=UNKNOWN ($GATE)::$*"
+  fi
+  UNKNOWNS=$((UNKNOWNS+1))
+}
 finish() {
+  if [ "$UNKNOWNS" -gt 0 ]; then
+    # Both counts, always, and UNKNOWN named first. A run that reports "0 violations" while
+    # three files went unread is the false green this whole toolkit exists to refuse.
+    echo "$UNKNOWNS unknown(s) and $FAILS violation(s) [$GATE] — UNKNOWN is red: the gate could not check, which is not a pass"
+    exit 1
+  fi
   if [ "$FAILS" -eq 0 ]; then echo "ok [$GATE]"; exit 0; fi
   echo "$FAILS violation(s) [$GATE]"; exit 1
 }

@@ -11,13 +11,11 @@ caller-template.yml
 .github/workflows/gates.yml
 .github/workflows/selftest.yml
 .github/workflows/caller-smoke.yml
-gates/lib.sh
-gates/actions-sha-pinned.sh
-gates/migrations-lint.sh
-gates/nextjs-env.sh
-gates/proxy-location.sh
-gates/required-files.sh
-gates/check_secrets.py
-gates/check_references.py
+# The gate files themselves are NOT listed here. gates/MANIFEST.txt is the one place their
+# names are written down, and selftest.sh asserts it against the gates/ directory in both
+# directions and checks each one is git-tracked. Listing them here as well made the same
+# fact live in two files that nothing compared, so adding a gate took two edits and
+# forgetting the second was silent.
+gates/MANIFEST.txt
 scripts/gates/denylist.txt
 fixtures

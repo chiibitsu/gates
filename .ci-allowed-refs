@@ -10,6 +10,13 @@ templates/tier1-ci.yml
 scripts/check_secrets.py
 scripts/check_references.py
 
+# A per-repo config file that CONSUMERS create, documented here in the table of the four
+# such files. This toolkit deliberately ships no copy: service-role.sh falls back to a
+# built-in default list when the file is absent, and committing an identical copy here would
+# put the same list in two places with nothing comparing them — the duplication that
+# gates/MANIFEST.txt exists to remove one directory over.
+scripts/gates/service-role-terms.txt
+
 # Cited ONLY by fixtures/check_references/bad/README.md, which is a planted failure
 # whose entire purpose is to be a broken citation. Allowed here so check_references.py
 # can pass this repo's own tree; NOT allowed inside the fixture, which has no allowlist

@@ -78,11 +78,35 @@ than nothing: an empty list looks exercised and is not.
 | `gates/nextjs-env.sh` | a NEXT_PUBLIC_ variable named like a server secret; a tracked `.env` that is not `.env.example`; an optional per-repo denylist of names and slugs |
 | `gates/check_secrets.py` | credential **values** in the working tree, and — when a range is supplied — the pushed history, commit messages, author and committer identities, added and renamed filenames, ref names and annotated tag objects, all through a redaction choke point |
 | `gates/check_references.py` | every in-repo path cited in the docs resolves; anything it cannot parse is reported UNCHECKED, never passed |
+| `gates/service-role.sh` | no request-path module can reach the service-role secret. Walks the import graph out of `app/`, `pages/`, `middleware.*` and `proxy.*`; any import it cannot resolve is reported **UNKNOWN**, never assumed clean |
 
 `gates/lib.sh` is shared helpers, not a gate. It takes the tree to check as argument 1
 or in `GATE_ROOT`, and exits 2 if neither is given — this toolkit is checked out beside
 the repo it inspects, never inside it, so there is deliberately no default root to fall
 back to.
+
+`gates/MANIFEST.txt` is the one place gate names are written down. `selftest.sh` asserts it
+against the `gates/` directory **by name, in both directions**, and uses neither list to
+filter the other: a gate file with no entry fails, an entry with no file fails. Before it
+existed, deleting a gate was invisible — the run read the directory, tested one fewer gate,
+and printed *every gate was shown to fail*, which was true of a smaller set than the reader
+had any way to know about.
+
+### UNKNOWN
+
+A gate can say three things. A checks UI has two colours.
+
+`ok` is green, a violation is red, and **"I could not check this" is also red** — the same
+red. There is no third colour to reach for: `exit 2` does not produce a neutral check run,
+and a `::warning` annotation leaves the run green, which is the one outcome "could not check"
+must never produce. So UNKNOWN exits 1 exactly like a violation, and the difference lives
+where a reader will actually see it — the `UNKNOWN [gate] <reason>` line, the summary line
+that counts unknowns separately from violations, and an `::error title=UNKNOWN` annotation.
+
+`selftest.sh` proves it the way it proves everything else. `fixtures/<gate>/bad/unknown/<case>`
+trees must make the gate go red **with** an UNKNOWN line and **without** a FAIL line. Only
+requiring the red would be satisfied by a gate that invented a violation instead — which
+sends someone hunting for a bug in their code rather than a blind spot in the gate.
 
 ## How to call it
 
@@ -148,13 +172,14 @@ To run it by hand:
 ./selftest.sh /path/to/your/repo     # defaults to this repo
 ```
 
-## The four per-repo config files
+## The five per-repo config files
 
-Three live in the repo being checked. The fourth belongs to the template, not here.
+Four live in the repo being checked. The fifth belongs to the template, not here.
 
 | File | Gate | What it is |
 |---|---|---|
 | `scripts/gates/required-files.txt` | required-files | one path per line; files must exist and be tracked, directories must exist |
+| `scripts/gates/service-role-terms.txt` | service-role | the identifiers whose presence in a module means that module can reach service-role, one per line. Absent file = a built-in list of the Supabase spellings. An **empty** file is a hard error: a term list that matches nothing is not a check |
 | `scripts/gates/denylist.txt` | nextjs-env | terms that must never appear in the repo, one per line, case-insensitive. Absent file = check skipped |
 | `.ci-allowed-refs` | check_references | deliberate reference exceptions in two sections: permanent above the `#!debt` marker line, promised-but-unbuilt below it. The debt section fails the run once a listed path starts existing, so entries get retired instead of outliving their reason. An **empty** file is a hard error — the marker line has to be there |
 | `tests/e2e/protected-routes.json` | protected-routes (Playwright, against the preview deploy) | lives in the app template, not in this toolkit: it needs a running deployment, which a repo-local gate cannot supply |
@@ -163,22 +188,31 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 
 1. Write `gates/<name>.sh`, sourcing `lib.sh`. First line after the shebang is the
    attribution comment, so a file lifted out of this repo still carries the name.
-2. Plant `fixtures/<name>/bad/` — the smallest tree that trips it.
-3. Run `./selftest.sh`. It must report that the gate catches its fixture **and** passes
+2. Add it to `gates/MANIFEST.txt` with its mode (`fixture`, `selftest` or `library`). The
+   selftest checks the directory and the manifest against each other in both directions, so
+   a gate that is in one and not the other fails the run rather than going unnoticed.
+3. Plant `fixtures/<name>/bad/` — the smallest tree that trips it.
+4. If the gate has a case it genuinely cannot decide, plant that too, as
+   `fixtures/<name>/bad/unknown/<case>/`. It must go red with an UNKNOWN line and no FAIL
+   line. Under `bad/`, never beside it: published releases filter their own planted failures
+   on the `fixtures/<gate>/bad/` prefix, and `caller-smoke.yml` runs a pinned release over
+   this tree.
+5. Run `./selftest.sh`. It must report that the gate catches its fixture **and** passes
    this tree. Without the fixture the selftest fails, which is the point.
-4. Every time a review finds this gate passing something it should have caught, add that
+6. Every time a review finds this gate passing something it should have caught, add that
    one shape as `fixtures/<name>/bad/cases/<shape>/` before the fix merges. The case has to
    fail on the old gate and pass on the new one, or it is not evidence of anything.
 
 ## Releases
 
-The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.0.4` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
+The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.1.0` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
 
 A release's `CITATION.cff` names its own version — that is the part that must be right. v1.0.0 and v1.0.1 got it right, v1.0.2 and v1.0.3 did not, and v1.0.4 restores it. The regression is worth reading as evidence for the rule rather than as two mistakes: the correction to a version's metadata is *made by* a pull request, so it lands in a commit **after** the one being tagged, and tagging the merged head of the PR that still reports the previous version is one behind by construction. A release must declare its own version **before** it is tagged. A release's workflow pins cannot name that release, because a commit cannot contain its own future SHA. What they name instead is **not derivable**, so do not try: **from v1.0.2 onward they point at the previous release, and before that they pointed at untagged ancestors** — v1.0.0 pins `186ff05` and v1.0.1 pins `2428668`, neither of which carries any tag, and v1.0.1 labels its untagged pin with its own version number. **Take the SHA to pin from this table, never from the example in a checkout.** That is the whole reason this table exists.
 
 | Version | Commit | Use it? |
 |---|---|---|
-| **v1.0.4** | tag `v1.0.4` — resolve with `git rev-list -n1 v1.0.4`, or read it off the release page | **Yes — use this one.** Its `CITATION.cff` names the version on its tag — which v1.0.0 and v1.0.1 also did, and v1.0.2 and v1.0.3 did not. Gates byte-identical to v1.0.2 and v1.0.3, so it carries their one known false green, described below. |
+| **v1.1.0** | tag `v1.1.0` — resolve with `git rev-list -n1 v1.1.0`, or read it off the release page | **Yes — use this one.** Adds `service-role.sh`, the UNKNOWN outcome, and `gates/MANIFEST.txt` with a both-directions check against the `gates/` directory. Carries v1.0.2's known false green in `actions-sha-pinned.sh`, described below — that gate is unchanged. **Adopting this release can turn a consumer red on code that was green under v1.0.4**, because `service-role.sh` did not exist to check it. That is a finding, not a regression. |
+| v1.0.4 | `e075a93` | **Usable, and superseded by v1.1.0** — five gates instead of six, so nothing checks whether the request path can reach the service-role secret. Its `CITATION.cff` names the version on its tag, which v1.0.0 and v1.0.1 also did and v1.0.2 and v1.0.3 did not. Gates byte-identical to v1.0.2 and v1.0.3, so it carries their one known false green, described below. |
 | v1.0.3 | `25a1ca1` | **Do not cite.** Its gates are correct and identical to v1.0.2's, so a pin at this SHA works. But its `CITATION.cff` says `1.0.2` and its caller template says `v1.0.2` — this tag reproduces the exact defect it was cut to fix. The cause is structural and is the useful part: the correction to a version's metadata is *made by* the pull request, so it lands in a commit **after** the one being tagged. Tagging the merged head of the PR that reports the previous version is guaranteed to be one behind. A release has to declare its own version **before** it is tagged, which is what v1.0.4 does. |
 | v1.0.2 | `c3e3f49` | **Usable, and superseded by v1.0.4** — same gates, wrong version metadata inside the tag. Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, reproducible: `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. The rule that produces it is stated once, in Known gaps below, and deliberately not paraphrased here — a first draft of this row paraphrased it and got the rule wrong in a different way than the gap section did, which is how two statements of one fact always end. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
 | v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes shipped in v1.0.2. Superseded — move to v1.0.4. |
@@ -195,6 +229,25 @@ header, which is the honest account of what that scanner does not do.
   working-tree mode, so history coverage
   in a consumer repo comes from gitleaks or from GitHub's own secret scanning, not from
   here.
+- **The service-role gate reads imports with a regex, not a parser.** It follows literal
+  `from`, `import` and `require` specifiers, resolving `./`, `../`, absolute paths, and
+  **every alias declared in tsconfig `compilerOptions.paths`** — not just `@/*`. A specifier
+  matching no declared alias is treated as a published package; a specifier that matches one
+  and resolves to no file is UNKNOWN, never skipped. If the `paths` object is present and no
+  alias can be parsed out of it, that is UNKNOWN too. A specifier that appears inside a
+  comment or a string is
+  followed as though it were real — over-inclusive, which costs a false red rather than a
+  false green. What it cannot follow at all it calls UNKNOWN.
+- **The service-role gate does not look inside published packages.** A bare specifier
+  (`react`, `@supabase/ssr`) is out of scope by definition, so a third-party module that
+  reads `process.env.SUPABASE_SECRET_KEY` itself is invisible to it. Repo source is what it
+  covers.
+- **The service-role term list matches literal names.** `process.env["SUPABASE" +
+  "_SECRET_KEY"]` is not a literal occurrence of any listed term and is not caught.
+- **The service-role gate knows Next.js request paths and no others.** `app/`, `pages/`,
+  `middleware.*`, `proxy.*`. A tree that depends on `next` and has none of them is UNKNOWN;
+  a tree that does not depend on `next` is reported as having no request path to walk, in
+  those words, rather than as a pass.
 - **Archives are not inspected.** Six review rounds found bypass after bypass in the
   machinery that opened them, and the rate never fell. It was removed.
 - **LFS objects in history.** `lfs: true` materialises the checked-out tree only, so a
