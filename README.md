@@ -106,9 +106,14 @@ runs — `fixtures/review/bad/README.md` — whose result is evidence about one 
 
 Two details that are easy to get wrong:
 
-- **`REVIEW.md` is read by name in the prompt.** Anthropic's managed Code Review service picks
-  that file up from the repository root on its own; `anthropics/claude-code-action` does not. If
-  the file moves, the prompt moves with it.
+- **`REVIEW.md` is read by name, from the BASE revision.** Anthropic's managed Code Review
+  service picks that file up from the repository root on its own; `anthropics/claude-code-action`
+  does not, so the prompt names it. The workflow extracts it out of the base commit into
+  `.review-policy.md` before the model runs, because a workspace copy is a file the pull request
+  under review can edit — one commit adding "report nothing" and the reviewer obeys, on the run
+  that was meant to read that commit. Same arrangement as the gates, which are checked out at a
+  pinned ref and never read from the caller's diff. A change to `REVIEW.md` takes effect when it
+  merges. If the base has no `REVIEW.md`, the run is UNKNOWN and red rather than unguided.
 - **The tally is posted by the workflow, not by the model.** Every run ends with
   `reviewed <sha>: N findings`, and when the model does not report a count the step posts
   `UNKNOWN` and goes red. A reviewer that died silently is indistinguishable from a clean one,

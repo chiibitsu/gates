@@ -25,8 +25,10 @@ jobs:
   # is worse than one that says why it is off.
   #
   # To turn it on: take the v1.2.0 SHA (or later) from the Releases table in the README, put it
-  # on BOTH lines below and on both `gates` lines above, and uncomment. It needs a repository
-  # secret CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`.
+  # on the `uses:` line below and on both `gates` lines above, and uncomment. There is ONE SHA
+  # in this block — the other line is the secret mapping, and an earlier wording said "BOTH
+  # lines below", which would have had a careful reader overwrite the token with a commit hash.
+  # It needs a repository secret CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`.
   #
   # It runs ONLY while the pull request is a draft. On a ready PR the job reports `skipped`,
   # which is an absence, not a pass — see AGENTS.md on accounting for a check that is not there.
