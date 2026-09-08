@@ -68,7 +68,15 @@ SPEC="$(mktemp)"; UNIVERSE="$(mktemp)"
 # registered here. Both files are removed by that single cleanup instead.
 sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$MANIFEST" \
   | awk 'NF { print $1 }' | sort > "$SPEC"
+# `[ -f ]` on every one, because an unmatched glob stays LITERAL in bash unless nullglob is
+# set. Both patterns match today; remove the last .py gate and `$HERE/gates/*.py` survives as
+# itself, basename yields `*.py`, and the universe gains an entry named `*`. The cross-check
+# below then reports `gates/* exists but is not named in gates/MANIFEST.txt` and the
+# trackedness loop reports the same literal as untracked — two messages sending a reader after
+# a file called `*`, printed by the check whose entire job is telling the truth about which
+# gates exist. Reproduced before fixing.
 for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
+  [ -f "$g" ] || continue
   n="$(basename "$g")"; echo "${n%.*}"
 done | sort > "$UNIVERSE"
 
@@ -78,6 +86,7 @@ done | sort > "$UNIVERSE"
 # otherwise collapsing the duplicate would have quietly dropped a check with it.
 if git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py "$MANIFEST"; do
+    [ -f "$g" ] || continue
     rp="${g#"$HERE"/}"
     git -C "$HERE" ls-files --error-unmatch -- "$rp" >/dev/null 2>&1 || {
       echo "SELFTEST FAIL: $rp is not git-tracked — it exists here and would not exist in a clone"
@@ -139,6 +148,7 @@ run_gate() { # $1 = gate file, $2 = tree
 }
 
 for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
+  [ -f "$g" ] || continue
   name="$(basename "$g")"
   gate="${name%.*}"
   mode="$(mode_of "$gate")"
