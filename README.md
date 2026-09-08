@@ -38,7 +38,7 @@ One bad fixture is one tree holding several violations, so it proves only that
 *something* in it still fails. A shape that stopped being detected hides behind the ones
 that still are. So each shape a review found the gate passing gets its own minimal tree
 under `fixtures/<name>/bad/cases/`, and the selftest requires exit 1 from every one of
-them individually. Every one of the fourteen cases in this repo was written after a
+them individually. Every one of the thirteen cases in this repo was written after a
 reviewer found the gate walking past that exact shape.
 
 They sit *under* the bad fixture rather than beside it because every gate that filters
@@ -179,6 +179,19 @@ header, which is the honest account of what that scanner does not do.
 - **Non-UTF-8 history hunks.** UTF-16 and UTF-32 content forced through git's text diff
   driver is reported as NOT scanned rather than decoded. Working-tree files are still
   decoded properly.
+- **The pinning gate is a line matcher, and a line matcher cannot parse YAML.** It reads a
+  `uses` key that starts a line, optionally after a `-`, a `{` or a quote. It therefore does
+  NOT see `uses` when it is not the first key of a flow mapping — `- {name: build, uses:
+  actions/checkout@v4}` and `steps: [{uses: a@main}, {uses: b@v1}]` both report ok — and by
+  extension it cannot see a `#` inside a quoted scalar on such a line. This was attempted:
+  the anchor was replaced with a full extraction pass that found every key on every line,
+  and within one review round that version had produced a false green of its own (a `#`
+  inside a quoted string read as a comment) and a false red (the text `uses:` inside a
+  `run:` shell command). Neither a grep nor an awk can tell a YAML key from the same
+  characters inside a string or a script, and the attempt was reverted rather than shipped.
+  The real fix is a YAML parser, which is a version change and not a patch. Until then this
+  is a stated blind spot rather than a discovered one, and it fails toward a tag being
+  missed on an unusual spelling, never toward a pinned action being rejected.
 - **A case proves detection by exit code, not by what the gate said.** The selftest asserts
   exit 1 from each case, so a defect that keeps the verdict and corrupts the report — a
   gate that stops halfway through its list and still exits 1, or one that prints the wrong
