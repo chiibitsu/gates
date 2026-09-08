@@ -1,7 +1,12 @@
 # Part of chiibitsu/gates by Angeline S. Viray (Chiibitsu Labs). MIT. https://github.com/chiibitsu/gates
-# Copy this to .github/workflows/gates.yml in your repo. The SHA below is v1.0.3, and it
-# appears twice on purpose: a reusable workflow cannot discover its own commit, so the
-# ref you pin has to be handed to it. Change both together.
+# Copy this to .github/workflows/gates.yml in your repo. The SHA below appears twice on
+# purpose: a reusable workflow cannot discover its own commit, so the ref you pin has to be
+# handed to it. Change both together.
+#
+# It names the PREVIOUS release, and it always will: a commit cannot contain its own SHA, so
+# the pin inside a release can only point at one already published. Take the SHA you actually
+# want from the Releases table in the README. The one below works — v1.0.3's gates are correct
+# and identical to the current release's — but its own metadata names the wrong version.
 on: [pull_request, push]
 jobs:
   gates:
