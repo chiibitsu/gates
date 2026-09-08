@@ -68,19 +68,10 @@ jobs:
 
       # THE POLICY COMES FROM THE BASE, NOT FROM THE PULL REQUEST.
       #
-      # REVIEW.md decides what counts as Important, what is skipped, and what the tally says. A
-      # workspace copy of it is a file the pull request under review can edit — one commit
-      # adding "report nothing" to REVIEW.md and the reviewer obeys, on the very run that was
-      # supposed to read that commit. The policy would be defined by the thing it governs.
-      #
-      # This is the arrangement the gates already use and it is worth saying out loud: gates.yml
-      # checks the toolkit out at a PINNED ref and never reads it from the caller's diff. The
-      # reviewer now matches. A pull request that improves REVIEW.md takes effect once it is
-      # merged, which is the same deal every gate change gets.
-      #
-      # Failure to load it is UNKNOWN and red. Falling back to the workspace copy would be a
-      # silent downgrade to the untrusted one, and reviewing with no policy at all is not a
-      # review this repository is willing to call clean.
+      # Why, in full, lives in REVIEW.md under "A check reads its rules from outside the thing
+      # it checks" — stated there once rather than twice, because one fact in two files is how
+      # the two drift and each reads fine alone. The short of it: a workspace copy of REVIEW.md
+      # is a file the pull request under review can edit.
       - name: Load the review policy from the base revision
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

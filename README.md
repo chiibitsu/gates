@@ -235,6 +235,15 @@ Five live in the repo being checked. The sixth belongs to the template, not here
 
 The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.2.0` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
 
+That rule applies to everything this repo pins, not only to itself, and the reviewer's action is the measured case. On 2026-09-08, `anthropics/claude-code-action` resolved as:
+
+```
+refs/tags/v1        b7912aeeb535234e3e9385ff49e8237f689b5f14
+refs/tags/v1.0.217  ef7878a0506921197f7f9cd8a6c8dc7b11497021
+```
+
+`v1` is a moving pointer, and it sat on the commit of **no concrete release** — pinning what `@v1` happens to resolve to would have pinned neither the latest release nor anything with a version number on it. A patch tag does not move, so `review.yml` pins `v1.0.217`. Measured with `git ls-remote` against the action's own repository, not read off a docs page.
+
 A release's `CITATION.cff` names its own version — that is the part that must be right. v1.0.0 and v1.0.1 got it right, v1.0.2 and v1.0.3 did not, and v1.0.4 restores it. The regression is worth reading as evidence for the rule rather than as two mistakes: the correction to a version's metadata is *made by* a pull request, so it lands in a commit **after** the one being tagged, and tagging the merged head of the PR that still reports the previous version is one behind by construction. A release must declare its own version **before** it is tagged. A release's workflow pins cannot name that release, because a commit cannot contain its own future SHA. What they name instead is **not derivable**, so do not try: **from v1.0.2 onward they point at the previous release, and before that they pointed at untagged ancestors** — v1.0.0 pins `186ff05` and v1.0.1 pins `2428668`, neither of which carries any tag, and v1.0.1 labels its untagged pin with its own version number. **Take the SHA to pin from this table, never from the example in a checkout.** That is the whole reason this table exists.
 
 | Version | Commit | Use it? |

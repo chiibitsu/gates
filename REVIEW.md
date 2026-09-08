@@ -8,6 +8,22 @@ automatically. If you rename or move this file, the workflow's prompt has to cha
 This file is instructions, not context. `@` imports are not expanded and referenced files are
 not pulled in, so every rule that must be followed is written out below.
 
+## A check reads its rules from outside the thing it checks
+
+Canon, and the reason `review.yml` does not read this file out of the workspace it is
+reviewing. It extracts it from the **base revision** first, because a copy in the pull request
+is a copy that pull request can edit — one commit adding "report nothing" here and the reviewer
+obeys, on the very run that was supposed to read that commit. The rules would be set by the
+thing being judged against them.
+
+The deterministic gates already worked this way and it took a reviewer to make it visible:
+`gates.yml` checks the toolkit out at a **pinned** ref and never reads a gate from the caller's
+diff. A change to this file therefore takes effect when it merges, which is the same deal every
+gate change gets. If the base has no `REVIEW.md`, the run is UNKNOWN and red rather than
+unguided — falling back to the workspace copy would be a silent downgrade to the untrusted one.
+
+Stated here once. `review.yml` points at this section rather than restating it.
+
 ## What Important means here
 
 Reserve **Important** for a finding that would **break behaviour, leak data, or block a
