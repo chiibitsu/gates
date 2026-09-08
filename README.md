@@ -9,8 +9,9 @@ Built and maintained by **Angeline S. Viray**, founder of Chiibitsu Labs
 operating system for shipping production software with AI builders as a non-coder
 product architect.
 
-> "A gate that cannot fail is not a gate."
-> — Angeline S. Viray, vibeOS, `templates/tier1-ci.yml`
+> "A gate that cannot fail is not a gate. A gate that cannot say I don't know
+> will say fine."
+> — Angeline S. Viray, vibeOS
 
 `check_secrets.py` and `check_references.py` are vibeOS components by the same author,
 vendored here byte-for-byte from `scripts/check_secrets.py` and
@@ -33,6 +34,20 @@ directions, every CI run. A gate with no fixture fails the selftest.**
 
 That is the whole design. A gate that has never been seen to fail is not known to work,
 and a check that quietly does nothing looks exactly like a check that passes.
+
+**The second half of the rule is not implemented yet, and this release is honest about
+that.** Every gate here answers with two values: clean, or violation. It has no way to
+say *I could not check*. That is why review found the defects it found — in shell, the
+failure mode of every tool is "produces no output", which is the same thing this design
+uses to mean "found nothing wrong". Success and not-looking share a representation, so
+each new error path arrives as a silent pass, for free. Roughly thirty were found here by
+review; the selftest caught none of them, because it asks whether the gate CAN fail, not
+whether it looked at the right thing.
+
+The fix is a third outcome — exit 2, *could not check*, which CI must treat as a hard
+failure — and it lands in the next version, together with real parsers for the formats
+that have a grammar. Until it does, the shape of the risk is written down here rather
+than discovered later.
 
 One bad fixture is one tree holding several violations, so it proves only that
 *something* in it still fails. A shape that stopped being detected hides behind the ones
