@@ -86,16 +86,17 @@ back to.
 
 ## How to call it
 
-Copy `caller-template.yml` into your repo as `.github/workflows/gates.yml` and replace
-the placeholder with a real toolkit commit SHA:
+Copy `caller-template.yml` into your repo as `.github/workflows/gates.yml`. It ships a real
+SHA rather than a placeholder, and that SHA is the **previous** release — replace both
+occurrences with the one you want from the Releases table below:
 
 ```yaml
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@c3e3f49f91c3c39fc4a74d0ccf6bb8b15d70e3fd  # v1.0.2
+    uses: chiibitsu/gates/.github/workflows/gates.yml@25a1ca1f7ad7875138dd943657a5f7f1a3aa1809  # v1.0.3
     with:
-      gates_ref: c3e3f49f91c3c39fc4a74d0ccf6bb8b15d70e3fd # v1.0.2
+      gates_ref: 25a1ca1f7ad7875138dd943657a5f7f1a3aa1809 # v1.0.3
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
@@ -171,10 +172,16 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 
 ## Releases
 
+The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.0.4` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
+
+A release's `CITATION.cff` names its own version — that is the part that must be right. v1.0.0 and v1.0.1 got it right, v1.0.2 and v1.0.3 did not, and v1.0.4 restores it. The regression is worth reading as evidence for the rule rather than as two mistakes: the correction to a version's metadata is *made by* a pull request, so it lands in a commit **after** the one being tagged, and tagging the merged head of the PR that still reports the previous version is one behind by construction. A release must declare its own version **before** it is tagged. A release's workflow pins cannot name that release, because a commit cannot contain its own future SHA. What they name instead is **not derivable**, so do not try: **from v1.0.2 onward they point at the previous release, and before that they pointed at untagged ancestors** — v1.0.0 pins `186ff05` and v1.0.1 pins `2428668`, neither of which carries any tag, and v1.0.1 labels its untagged pin with its own version number. **Take the SHA to pin from this table, never from the example in a checkout.** That is the whole reason this table exists.
+
 | Version | Commit | Use it? |
 |---|---|---|
-| **v1.0.2** | `c3e3f49` | **Yes — the best of the three, and still not clean.** Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, documented in Known gaps and reproducible: a `uses` key that is not the first key of a flow mapping is not seen at all, so `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
-| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes shipped in v1.0.2. Superseded — move to v1.0.2. |
+| **v1.0.4** | tag `v1.0.4` — resolve with `git rev-list -n1 v1.0.4`, or read it off the release page | **Yes — use this one.** Its `CITATION.cff` names the version on its tag — which v1.0.0 and v1.0.1 also did, and v1.0.2 and v1.0.3 did not. Gates byte-identical to v1.0.2 and v1.0.3, so it carries their one known false green, described below. |
+| v1.0.3 | `25a1ca1` | **Do not cite.** Its gates are correct and identical to v1.0.2's, so a pin at this SHA works. But its `CITATION.cff` says `1.0.2` and its caller template says `v1.0.2` — this tag reproduces the exact defect it was cut to fix. The cause is structural and is the useful part: the correction to a version's metadata is *made by* the pull request, so it lands in a commit **after** the one being tagged. Tagging the merged head of the PR that reports the previous version is guaranteed to be one behind. A release has to declare its own version **before** it is tagged, which is what v1.0.4 does. |
+| v1.0.2 | `c3e3f49` | **Usable, and superseded by v1.0.4** — same gates, wrong version metadata inside the tag. Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, reproducible: `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. The rule that produces it is stated once, in Known gaps below, and deliberately not paraphrased here — a first draft of this row paraphrased it and got the rule wrong in a different way than the gap section did, which is how two statements of one fact always end. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
+| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes shipped in v1.0.2. Superseded — move to v1.0.4. |
 | v1.0.0 | `39f78d6` | **No.** Four gates could pass a violation: migrations-lint read a commented-out `enable row level security` as evidence; actions-sha-pinned missed two legal YAML spellings of the `uses` key; required-files and nextjs-env skipped every git-backed check inside a linked worktree or submodule. It also deleted a `.gates-selftest` directory in the tree it was inspecting. The tag stays where it is — a published tag on a gate toolkit does not get moved — and this table is the record. |
 
 ## Known gaps
@@ -196,11 +203,19 @@ header, which is the honest account of what that scanner does not do.
 - **Non-UTF-8 history hunks.** UTF-16 and UTF-32 content forced through git's text diff
   driver is reported as NOT scanned rather than decoded. Working-tree files are still
   decoded properly.
-- **The pinning gate is a line matcher, and a line matcher cannot parse YAML.** It reads a
-  `uses` key that starts a line, optionally after a `-`, a `{` or a quote. It therefore does
-  NOT see `uses` when it is not the first key of a flow mapping — `- {name: build, uses:
-  actions/checkout@v4}` and `steps: [{uses: a@main}, {uses: b@v1}]` both report ok — and by
-  extension it cannot see a `#` inside a quoted scalar on such a line. This was attempted:
+- **The pinning gate is a line matcher, and a line matcher cannot parse YAML.** Its anchor
+  allows only whitespace, `-`, `{`, `,` and a quote before the key. So it sees `uses` only
+  when **everything preceding it on that line is one of those characters**, and anything else
+  in front makes the key invisible. Two shapes reach that state by different routes, and both
+  report ok:
+
+  - `- {name: build, uses: actions/checkout@v4}` — the letters in `name: build` are not in
+    the leading class. `uses` is not the first key here.
+  - `steps: [{uses: a@main}, {uses: b@v1}]` — `[` is not in the leading class either. Note
+    that `uses` **is** the first key of its mapping in this one, so key position is not the
+    rule; an earlier version of this note said it was, and gave this line as its example.
+
+  By extension the gate also cannot see a `#` inside a quoted scalar on such a line. This was attempted:
   the anchor was replaced with a full extraction pass that found every key on every line,
   and within one review round that version had produced a false green of its own (a `#`
   inside a quoted string read as a comment) and a false red (the text `uses:` inside a
