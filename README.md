@@ -93,9 +93,9 @@ the placeholder with a real toolkit commit SHA:
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@c3e3f49f91c3c39fc4a74d0ccf6bb8b15d70e3fd  # v1.0.2
+    uses: chiibitsu/gates/.github/workflows/gates.yml@25a1ca1f7ad7875138dd943657a5f7f1a3aa1809  # v1.0.3
     with:
-      gates_ref: c3e3f49f91c3c39fc4a74d0ccf6bb8b15d70e3fd # v1.0.2
+      gates_ref: 25a1ca1f7ad7875138dd943657a5f7f1a3aa1809 # v1.0.3
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
@@ -173,8 +173,9 @@ Three live in the repo being checked. The fourth belongs to the template, not he
 
 | Version | Commit | Use it? |
 |---|---|---|
-| **v1.0.2** | `c3e3f49` | **Yes — the best of the three, and still not clean.** Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, documented in Known gaps and reproducible: a `uses` key that is not the first key of a flow mapping is not seen at all, so `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
-| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes shipped in v1.0.2. Superseded — move to v1.0.2. |
+| **v1.0.3** | `25a1ca1` | **Yes — use this one.** The gate code is byte-identical to v1.0.2; `diff` across `gates/`, `selftest.sh`, `scripts/` and `fixtures/` is empty. It exists because the v1.0.2 tag ships a `CITATION.cff` that names version 1.0.1 and a caller-template header that says the same — the corrections landed on main after that tag was cut, and a published tag does not move. So this release carries v1.0.2's gates and v1.0.2's one known false green, described below, with paperwork that matches its own name. A toolkit whose thesis is that an artifact must not misreport itself does not get to ship one that does. |
+| v1.0.2 | `c3e3f49` | **Usable, and superseded by v1.0.3** — same gates, wrong version metadata inside the tag. Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, documented in Known gaps and reproducible: a `uses` key that is not the first key of a flow mapping is not seen at all, so `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
+| v1.0.1 | `45834a1` | **Yes**, with one known false red. A workflow line like `uses: owner/repo@<40 hex> # docker://anything` is rejected as an unpinned container action, because this version tests the whole line for `docker://` instead of the parsed value. It errs toward a visible red, never a silent green, which is why the tag stands rather than moving. Fixed after the tag point. Review since then also found six more defects in the two gates rewritten at that tag point — including two outright false greens, and a denylist that made *any* repo with a non-empty one permanently red. All fixed after the tag; the fixes shipped in v1.0.2. Superseded — move to v1.0.3. |
 | v1.0.0 | `39f78d6` | **No.** Four gates could pass a violation: migrations-lint read a commented-out `enable row level security` as evidence; actions-sha-pinned missed two legal YAML spellings of the `uses` key; required-files and nextjs-env skipped every git-backed check inside a linked worktree or submodule. It also deleted a `.gates-selftest` directory in the tree it was inspecting. The tag stays where it is — a published tag on a gate toolkit does not get moved — and this table is the record. |
 
 ## Known gaps
