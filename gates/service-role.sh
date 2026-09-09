@@ -62,9 +62,15 @@ cat > "$SCAN" <<'SCANAWK'
 # LINE-INCREMENTAL, NOT SLURPED, for the reason recorded in the SQL scanner: `buf = buf $0
 # "\n"` is quadratic in mawk and took 12.1s on a 1.1MB generated types file against 0.11s for
 # the greps it replaced. State is carried across lines instead.
+# `}` IS NOT IN THIS SET, deliberately. It was, and `const x = {} / foo; import { admin } from
+# "../lib/admin"` then read the division as the start of a regex literal and consumed the rest
+# of the line — the real import with it. `ok`, exit 0, on a module reaching the secret, where
+# the previous extractor caught it. A block close CAN precede a regex, so this trades a rare
+# false red (a regex body scanned as code) for a false green, which is the trade this
+# repository takes every time.
 function isregexpos(c) {
   return (c == "" || c == "(" || c == "," || c == "=" || c == ":" || c == "[" || c == "!" ||
-          c == "&" || c == "|" || c == "?" || c == "{" || c == "}" || c == ";" || c == "+" ||
+          c == "&" || c == "|" || c == "?" || c == "{" || c == ";" || c == "+" ||
           c == "-" || c == "*" || c == "%" || c == "<" || c == ">" || c == "~" || c == "^" ||
           c == "k")
 }
@@ -145,8 +151,13 @@ function clearpend() {
       v = ""
       while (i <= n) { c = substr($0, i, 1); if (c !~ /[A-Za-z0-9_$]/) break; v = v c; i++ }
       # `.from` is a method name, not a keyword: `Array.from(",")` put the string after it in
-      # the specifier slot.
-      if (want(v) && last != ".") { clearpend(); pend = v; paren = 0 } else clearpend()
+      # the specifier slot. But `module.require()` IS a module loader — dropping every dotted
+      # `require` lost it, and a page calling `module.require("../lib/admin")` on a module
+      # holding the secret reported ok, exit 0, where the previous extractor caught it.
+      if (want(v) && last != ".") { clearpend(); pend = v; paren = 0 }
+      else if (v == "require" && last == "." && prevword == "module") { clearpend(); pend = v; paren = 0 }
+      else clearpend()
+      prevword = v
       last = (v == "return" || v == "typeof" || v == "case" || v == "in" || v == "of" ||
               v == "new" || v == "delete" || v == "void" || v == "do" || v == "else" ||
               v == "yield" || v == "await") ? "k" : "w"
@@ -603,14 +614,26 @@ ${b%.js}.d.ts" ;;
       # exists — which is why it runs after the -f test rather than as a string rewrite.
       if [ -f "$cand" ]; then
         cdir="$(cd -- "$(dirname -- "$cand")" 2>/dev/null && pwd -P)" || continue
-        found="$cdir/$(basename -- "$cand")"
+        found="$found$cdir/$(basename -- "$cand")
+"
         break
       fi
     done
-    if [ -n "$found" ]; then break; fi
     done <<< "$cands"
-    if [ -n "$found" ]; then break; fi
   done <<< "$bases"
+  # EVERY CANDIDATE THAT EXISTS, NOT THE FIRST ONE. Ordering the candidate list was the wrong
+  # tool for this and it could only ever be wrong in one direction:
+  #
+  #   - source before emitted, so a stale `admin.mjs` beside its `admin.mts` cannot mask a
+  #     secret added to the source (a real finding, fixed that way);
+  #   - but in a JAVASCRIPT project `require("../lib/admin.js")` means admin.js, and putting
+  #     the `.ts` substitution first scanned a clean `admin.ts` while `admin.js` — the module
+  #     Node actually loads, holding SUPABASE_SERVICE_ROLE_KEY — was never read. `ok`, exit 0.
+  #
+  # Whichever candidate is second gets skipped, and either way round that is a false green.
+  # So both are walked. The cost is at most a module read that Node would not have loaded —
+  # a false red, and the direction this toolkit errs in; the benefit is that no ordering
+  # heuristic has to be right about a project type this gate cannot reliably detect.
   if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
   # A baseUrl probe that found nothing is TypeScript's own fallthrough to node_modules — but
   # only for a name that could BE a package. Reporting UNKNOWN for every miss would turn
@@ -681,7 +704,13 @@ while :; do
     rc=$?
     set -e
     case "$rc" in
-      0) printf '%s\t%s\n' "$file" "$target" >> "$EDGES"; enqueue "$target" ;;
+      0) # resolve() may name MORE THAN ONE file — see its note: when both an explicitly
+         # imported `.js` and a same-named `.ts` exist on disk, either could be the module
+         # that runs, so both are edges and both are walked.
+         while IFS= read -r one; do
+           [ -n "$one" ] || continue
+           printf '%s\t%s\n' "$file" "$one" >> "$EDGES"; enqueue "$one"
+         done <<< "$target" ;;
       1) : ;;  # bare specifier: a published package, out of this gate's reach by design
       2) unknown "$(rel "$file") imports '$spec', which this gate could not resolve to a file — an unread module is not a clean one" ;;
       3) unknown "$(rel "$file") imports '$spec', which matches no path alias this gate could read$TSCONFIG_NOTE and is not a well-formed package name — this gate cannot say what it is, and will not call it a dependency to skip it" ;;
