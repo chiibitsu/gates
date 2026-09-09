@@ -704,10 +704,14 @@ while IFS= read -r file; do
     [ -n "$term" ] || continue
     set +e
     # `-a`, BECAUSE ONE BYTE MUST NOT HIDE THE SECRET. Without it a NUL anywhere in a module
-    # makes grep call the file binary and print nothing while exiting 1, which this gate reads
-    # as "term not present". Measured: a module holding SUPABASE_SERVICE_ROLE_KEY and a single
-    # NUL byte, reached from a page, reported `ok [service-role]`, exit 0. This one predates
-    # the tokenisers; it surfaced from the same finding in the other gate.
+    # makes grep call the file binary, print nothing, and EXIT 0 with a note on stderr.
+    # Measured: a module holding SUPABASE_SERVICE_ROLE_KEY and a single NUL byte, reached from
+    # a page, reported `ok [service-role]`, exit 0.
+    #
+    # EXIT 0, not 1 — this comment said 1 and was wrong, and the error matters: the
+    # `grc -gt 1` branch below is the one a reader would expect to have caught this, and it
+    # would not have. grc was 0, hits was empty, and the emptiness check swallowed it. A
+    # wrong account of a mechanism is how the next person looks in the wrong place.
     hits="$(grep -anF -e "$term" -- "$file" 2>"$WORK/err")"
     grc=$?
     set -e

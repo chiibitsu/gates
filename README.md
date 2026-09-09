@@ -317,11 +317,14 @@ header, which is the honest account of what that scanner does not do.
   time and is created only when the function runs. But a string or body containing a
   `create … table` **sequence** is UNKNOWN rather than passed over, because `execute` and
   `DO $$` do run — UNKNOWN is still red, and it does not claim a violation the gate has not
-  established. Sequence, not two words anywhere: Sequence, not two words anywhere: `'created three
-  tables last week'` is prose and passes, while `'CREATE UNLOGGED TABLE …'` does not. That
-  allowance was once written `{0,2}`, which **mawk miscompiles** to zero repetitions when the
-  group begins with a `+`-quantified bracket — so every modifier form passed silently until
-  it was measured. Comments are recognised by the same scanner, not stripped by an
+  established. Sequence, not two words anywhere: Sequence with **at most two modifier words**, not two words
+  anywhere and not any number: `'created three tables last week'` and `'To create a new
+  monthly revenue table, run the report'` are prose and pass, while `'CREATE UNLOGGED TABLE …'`
+  does not. The bound was once written `{0,2}`, which **mawk miscompiles** to zero repetitions
+  when the group begins with a `+`-quantified bracket, so every modifier form passed silently;
+  replacing it with `*` fixed that and made the allowance unbounded, so English prose blocked
+  a compliant migration. It is two optional groups now — the bound was always the point, only
+  its spelling was wrong, twice. Comments are recognised by the same scanner, not stripped by an
   earlier stage: a stage that cannot see strings took `values ('x /* y')` for the start of a
   block comment and deleted every line to the next `*/`, hiding a whole `create table` —
   verified against PostgreSQL 16 as a real table left with RLS off — and the same swallow
@@ -357,14 +360,20 @@ header, which is the honest account of what that scanner does not do.
   can tell that from an import, so a candidate carrying `<`, `>`, `{` or `}` is dropped as
   text. Node subpath imports (`#internal/db`) are UNKNOWN: they resolve through `package.json`
   `imports`, which this gate does not read.
-- **Every `grep` over file content passes `-a`.** Without it, one byte that is invalid in the
-  ambient locale makes GNU grep declare a file binary, print nothing and exit non-zero — which
-  a gate reads as "not found". Measured: a module holding `SUPABASE_SERVICE_ROLE_KEY` plus a
-  single NUL byte, reached from a page, reported `ok`, exit 0; and a migration creating a
-  table whose quoted name held a LATIN1 byte had that table dropped from the comparison
-  entirely while the clean table beside it was still reported, so the loss looked like a
-  smaller violation count rather than a missing check. One byte must not decide whether a
-  gate can see a secret.
+- **Every `grep` over file content passes `-a`**, in all six shell gates and in `lib.sh`'s
+  shared `tgrep`. Without it, one byte that is invalid in the ambient locale makes GNU grep
+  declare a file binary, print nothing and **exit 0** with a note on stderr — which a gate
+  reads as "not found". Measured: a module holding `SUPABASE_SERVICE_ROLE_KEY` plus a single
+  NUL byte, reached from a page, reported `ok`, exit 0; the same byte hid a `NEXT_PUBLIC_`
+  service-key name from `nextjs-env` and an unpinned `uses:` ref from `actions-sha-pinned`;
+  and a migration creating a table whose quoted name held a LATIN1 byte had that table dropped
+  from the comparison entirely while the clean table beside it was still reported, so the loss
+  looked like a smaller violation count rather than a missing check. One byte must not decide
+  whether a gate can see a secret.
+
+  The exit status is worth stating exactly, because an earlier version of this bullet had it
+  backwards: grep exits **0**, not non-zero. Any guard written around a non-zero status —
+  `service-role` has one — would not have caught this, and did not.
 - **Every scanner here is line-incremental, and the comparison is not a shell loop.** The
   first version accumulated each file with `buf = buf $0 "\n"`, which mawk reallocates and
   copies every line: 12.1s on a 1.1MB generated types file against 0.11s for the greps it

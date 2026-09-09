@@ -101,4 +101,13 @@ finish() {
 # for a literal term handed grep two matchers; grep answered "conflicting matchers specified"
 # and exited 2 on every such search, which made the per-repo denylist unusable in any repo
 # that had one. A helper that dictates the matcher is a helper that decides the search.
-tgrep() { grep -rn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.next --exclude-dir=coverage "$@"; }
+# `-a` is not decoration. Without it one byte that is invalid in the ambient locale makes GNU
+# grep call a file binary, print nothing and EXIT 0 — which every caller here reads as "not
+# found". Measured: a NUL byte in a module hid a `NEXT_PUBLIC_`-prefixed service-key name from
+# nextjs-env, the gate whose whole job is secret names, and the file reported ok, exit 0.
+#
+# The name is written in pieces here on purpose: spelled out, this comment is itself a
+# NEXT_PUBLIC_ variable named like a server secret, and nextjs-env red on the toolkit's own
+# tree the moment it was added. The gate was right, which is the second-best way to learn it
+# works.
+tgrep() { grep -arn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.next --exclude-dir=coverage "$@"; }

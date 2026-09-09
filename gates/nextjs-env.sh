@@ -92,14 +92,14 @@ if in_git_repo "$ROOT"; then
     show_err "$WORK/err"
   else
     set +e
-    grep -E '(^|/)\.env(\..*)?$' "$WORK/tracked" > "$WORK/envcand" 2> "$WORK/err"
+    grep -aE '(^|/)\.env(\..*)?$' "$WORK/tracked" > "$WORK/envcand" 2> "$WORK/err"
     grc=$?
     set -e
     if [ "$grc" -gt 1 ]; then
       fail "filtering the tracked file list failed (grep exit $grc):"; show_err "$WORK/err"
     else
       set +e
-      grep -vE '\.example$' "$WORK/envcand" > "$WORK/env" 2> "$WORK/err"
+      grep -avE '\.example$' "$WORK/envcand" > "$WORK/env" 2> "$WORK/err"
       grc=$?
       set -e
       if [ "$grc" -gt 1 ]; then

@@ -174,15 +174,18 @@ function tok(k, v,   again) {
         # `create` then at most two modifier words then `table`, not "created" and "tables"
         # anywhere in the same sentence — `values ('created three tables last week')` was a
         # blocking UNKNOWN on an otherwise compliant file.
-        # `*`, NOT `{0,2}`. mawk 1.3.4 — the awk on Debian/Ubuntu and the one this repo names
-        # by hand — miscompiles an interval with n>=2 applied to a group whose body starts
-        # with a `+`-quantified bracket expression: it matches ZERO repetitions only. So the
-        # modifier allowance was inert and the test was exactly `create table`, which let
-        # `execute 'CREATE UNLOGGED TABLE public.x (id int)'` pass over silently. Verified
-        # against PostgreSQL 16: a persistent unlogged table, RLS off, gate green. The
-        # non-string path at the top of this scanner reads those modifiers correctly, so the
-        # gap was invisible from the fixtures.
-        if (tolower(sv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)*table([^a-z]|$)/) ddl = 1
+        # TWO OPTIONAL GROUPS, which is the bound written in a form mawk compiles. `{0,2}`
+        # was the obvious spelling and mawk 1.3.4 — the awk on Debian/Ubuntu — miscompiles an
+        # interval with n>=2 applied to a group whose body starts with a `+`-quantified
+        # bracket: it matches ZERO repetitions, so the allowance was inert, the test was
+        # exactly `create table`, and `execute 'CREATE UNLOGGED TABLE …'` passed over.
+        #
+        # Replacing it with `*` fixed that and broke the other side: unbounded, so ordinary
+        # English prose matched. Measured on a compliant migration —
+        # `values ('To create a new monthly revenue table, run the report')` — UNKNOWN, exit
+        # 1, on a file nothing executes. Seeding help text was enough to block the branch.
+        # The bound is the point; only its spelling was wrong.
+        if (tolower(sv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)?([a-z]+[ \t\n]+)?table([^a-z]|$)/) ddl = 1
         sv = ""; continue
       }
       sv = sv c; i++; continue
@@ -198,7 +201,7 @@ function tok(k, v,   again) {
     # it must not do is name a table and claim a violation it has not established.
     if (indq) {
       if (substr($0, i, length(dqtag)) == dqtag) { i += length(dqtag); indq = 0
-        if (tolower(dqv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)*table([^a-z]|$)/) dqddl = 1
+        if (tolower(dqv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)?([a-z]+[ \t\n]+)?table([^a-z]|$)/) dqddl = 1
         dqv = ""; continue }
       dqv = dqv c; i++; continue
     }
@@ -228,6 +231,9 @@ function tok(k, v,   again) {
 }
 END {
   if (st == 3) emitpair("C")
+  # A final `delete from t` with no trailing semicolon is still WHERE-less, and the note said
+  # so before state 10 existed. State 10 waits for a terminator that end-of-input never sends.
+  if (st == 10) print "X\t\t"
   # A SCANNER THAT LOST SYNC MUST NOT REPORT A CLEAN FILE. An unterminated quoted identifier
   # or string means everything after it was read as something it is not, so the only honest
   # answer about the rest of the file is that this gate could not read it.
