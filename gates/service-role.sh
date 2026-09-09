@@ -649,7 +649,16 @@ while :; do
   # than assumed harmless. `S<specifier>` is a literal specifier from a real import position.
   set +e
   recs="$(awk -f "$SCAN" -- "$file" 2>/dev/null)"
+  scan_rc=$?
   set -e
+  # A TOKENISER THAT FAILED READ NOTHING, and reading nothing is not reading a clean file.
+  # Without this the walk discarded awk's status, found no records, added no edges and raised
+  # no UNKNOWN — so every module reachable only through this one dropped out of the graph
+  # silently. The gate would then report on a smaller tree than the one it was given.
+  if [ "$scan_rc" -ne 0 ]; then
+    unknown "$(rel "$file") could not be tokenised (awk exited $scan_rc) — an unread module is not a clean one"
+    continue
+  fi
   nonliteral=0
   : > "$WORK/specs"
   while IFS= read -r rec; do

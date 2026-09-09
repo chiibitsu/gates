@@ -104,9 +104,17 @@ function tok(k, v,   again) {
       if (k == "W" && v == "table") st = 5
       else { st = 0; again = 1 }
     } else if (st == 5) {
-      if (k == "W" && (v == "if" || v == "exists" || v == "only")) { }
+      # `only` is reserved and can be swallowed. `if` and `exists` are NOT — they are legal
+      # table names, which the create side already knows. Swallowing them here bound `enable`
+      # as the table name of `alter table if enable row level security`, so no R record was
+      # emitted and a compliant file reported a violation.
+      if (k == "W" && v == "only") { }
+      else if (k == "W" && v == "if") st = 51
       else if (k == "W" || k == "Q") { nn = 1; P[1] = v; st = 6; wantpart = 0 }
       else { st = 0; again = 1 }
+    } else if (st == 51) {
+      if (k == "W" && v == "exists") st = 5
+      else { nn = 1; P[1] = "if"; st = 6; wantpart = 0; again = 1 }
     } else if (st == 6) {
       if (k == "D") wantpart = 1
       else if (wantpart && (k == "W" || k == "Q")) { P[++nn] = v; wantpart = 0 }
@@ -179,6 +187,28 @@ function tok(k, v,   again) {
       }
       sv = sv c; i++; continue
     }
+    # A DOLLAR-QUOTED BODY IS DATA, like any other string. Scanning it as SQL made
+    # `create function f() ... as $$ begin create table public.tmp (id int); end $$;` a FAIL
+    # naming public.tmp — a table that does not exist at definition time and is created only
+    # when the function runs. A red on a compliant file, naming a table nobody created.
+    #
+    # `do $$ ... $$` DOES execute immediately, so a create table in one is real — but the gate
+    # cannot see whether RLS follows it inside the body either, so the honest answer for both
+    # is the same as for `execute '...'`: UNKNOWN, which is still red and still blocks. What
+    # it must not do is name a table and claim a violation it has not established.
+    if (indq) {
+      if (substr($0, i, length(dqtag)) == dqtag) { i += length(dqtag); indq = 0
+        if (tolower(dqv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)*table([^a-z]|$)/) dqddl = 1
+        dqv = ""; continue }
+      dqv = dqv c; i++; continue
+    }
+    if (c == "$") {
+      j = i + 1
+      while (j <= n && substr($0, j, 1) ~ /[A-Za-z0-9_]/) j++
+      if (j <= n && substr($0, j, 1) == "$") {
+        dqtag = substr($0, i, j - i + 1); indq = 1; dqv = ""; i = j + 1; continue
+      }
+    }
     if (c == " " || c == "\t" || c == "\r") { i++; continue }
     if (c == "-" && substr($0, i + 1, 1) == "-") break
     if (c == "/" && substr($0, i + 1, 1) == "*") { inblk = 1; i += 2; continue }
@@ -192,6 +222,7 @@ function tok(k, v,   again) {
     if (c == ".") { tok("D", "."); i++; continue }
     tok("P", c); i++
   }
+  if (indq) dqv = dqv "\n"
   if (inq) qv = qv "\n"
   if (ins) sv = sv "\n"
 }
@@ -200,6 +231,8 @@ END {
   # A SCANNER THAT LOST SYNC MUST NOT REPORT A CLEAN FILE. An unterminated quoted identifier
   # or string means everything after it was read as something it is not, so the only honest
   # answer about the rest of the file is that this gate could not read it.
+  if (indq) print "U\tunterminated-dollar-quoted-body\t"
+  if (dqddl) print "U\tddl-inside-a-dollar-quoted-body\t"
   if (inblk) print "U\tunterminated-block-comment\t"
   if (inq) print "U\tunterminated-quoted-identifier\t"
   if (ins) print "U\tunterminated-string\t"
@@ -278,8 +311,8 @@ for up in "$MIG"/*.sql; do
     # read is the DDL inside the string. A message wider than the thing it describes is the
     # defect this repository exists to catch.
     case "$reason" in
-      ddl-inside-a-string-literal)
-        unknown "$(basename "$up"): a string literal here contains a 'create ... table' that \`execute\` would run. This gate reads strings as data, so it cannot say what that statement creates or whether RLS follows it" ;;
+      ddl-inside-a-string-literal|ddl-inside-a-dollar-quoted-body)
+        unknown "$(basename "$up"): a string or dollar-quoted body here contains a 'create ... table'. This gate reads strings as data, so it cannot say what that statement creates or whether RLS follows it" ;;
       *)
         unknown "$(basename "$up"): $reason — this gate could not read the statements after it, and will not call the file clean" ;;
     esac

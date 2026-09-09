@@ -311,11 +311,13 @@ header, which is the honest account of what that scanner does not do.
   folds `Orders` to `orders` but keeps `"Orders"` distinct — Prisma and Drizzle emit the
   quoted PascalCase form. Three successive regex versions each traded one error for another
   here; the pair comparison leaves no interpolated pattern to be wider than the name it was
-  given. It reads a `create table` inside a function body and inside a `DO $$` block, and reds
-  on both. It does **not** read one inside a `'…'` string literal: a string is data to the
-  scanner, and reading it named tables nobody created and sent fixers to edit their data —
-  but a string containing a `create … table` **sequence** is reported UNKNOWN rather than
-  passed over, because `execute` runs it. Sequence, not two words anywhere: `'created three
+  given. A `'…'` string and a `$$`/`$tag$` dollar-quoted body are both **data** to the scanner.
+  Reading them named tables nobody created: `create function f() … as $$ … create table
+  public.tmp … $$` was a violation naming `public.tmp`, which does not exist at definition
+  time and is created only when the function runs. But a string or body containing a
+  `create … table` **sequence** is UNKNOWN rather than passed over, because `execute` and
+  `DO $$` do run — UNKNOWN is still red, and it does not claim a violation the gate has not
+  established. Sequence, not two words anywhere: Sequence, not two words anywhere: `'created three
   tables last week'` is prose and passes, while `'CREATE UNLOGGED TABLE …'` does not. That
   allowance was once written `{0,2}`, which **mawk miscompiles** to zero repetitions when the
   group begins with a `+`-quantified bracket — so every modifier form passed silently until
@@ -326,10 +328,13 @@ header, which is the honest account of what that scanner does not do.
   turned a compliant migration containing `values ('/api/*')` red with a message naming a
   string that does not exist. What it genuinely cannot read, as silent passes: a name
   assembled at runtime (`execute format('create table %I …')` or string concatenation) and
-  `select … into`. **An unterminated quoted identifier, string or block comment is UNKNOWN,
-  not a pass** — a scanner that lost sync read everything after it as something it is not,
-  and one `"` inside an ordinary string literal (an inch mark in `values ('24" monitor')`)
-  is enough to do that. A quoted identifier may contain a tab or a **newline**; those are
+  `select … into`. **An unterminated quoted identifier, string, block comment or dollar-quoted
+  body is UNKNOWN, not a pass** — a scanner that lost sync read everything after it as
+  something it is not. A `"` inside an ordinary string literal (an inch mark in
+  `values ('24" monitor')`) is *not* one of those: it is string data, and reads as such.
+  It was not always — before the scanner had a string state that one byte opened a quoted
+  identifier that hid every statement after it — which is why the case is named here rather
+  than left to be rediscovered. A quoted identifier may contain a tab or a **newline**; those are
   escaped in the scanner's output and compared escaped, so a name containing one no longer
   shifts the records after it — that shift once reported a single violation naming a table
   that does not exist while silently dropping two real ones. The escaped form is what the
