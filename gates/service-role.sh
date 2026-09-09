@@ -185,7 +185,7 @@ SCANAWK
 #     and failing to find it means this gate does not understand the layout.
 # ---------------------------------------------------------------------------
 PKG="$ROOT/package.json"
-if [ ! -f "$PKG" ] || ! grep -qE '"next"[[:space:]]*:' "$PKG"; then
+if [ ! -f "$PKG" ] || ! grep -qaE '"next"[[:space:]]*:' "$PKG"; then
   echo "not a Next.js app (no package.json depending on \"next\") — no request path to walk"
   finish
 fi
@@ -297,7 +297,7 @@ if [ -f "$TSCONFIG" ]; then
   # of the same key — and the shipped fixture used "src", so the selftest was green over the
   # half that worked. BASE_DIR is already $ROOT when the value is "." or "./", so nothing else
   # needs to change: the key being there is the whole condition.
-  if grep -q '"baseUrl"' "$TSCONFIG" 2>/dev/null; then BASEURL_SET=1; fi
+  if grep -qa '"baseUrl"' "$TSCONFIG" 2>/dev/null; then BASEURL_SET=1; fi
 
   # The `paths` object, isolated exactly rather than read line by line.
   #
@@ -327,13 +327,13 @@ if [ -f "$TSCONFIG" ]; then
 
   # "<key>": [ "<first target>" — extracted by shape, from anywhere in the alias body, so the
   # same code reads a pretty-printed tsconfig and a minified one.
-  grep -oE '"[^"]+"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]+"' "$WORK/pathsbody" 2>/dev/null \
+  grep -aoE '"[^"]+"[[:space:]]*:[[:space:]]*\[[[:space:]]*"[^"]+"' "$WORK/pathsbody" 2>/dev/null \
     | sed -E 's/"([^"]+)"[[:space:]]*:[[:space:]]*\[[[:space:]]*"([^"]+)"/\1\t\2/' > "$ALIASES" 2>/dev/null || true
 
   # `extends` is not followed. A base config holding the aliases leaves $ALIASES empty, and an
   # `@/lib/secret` then matches no alias, is called a published package, and is skipped — a
   # false green. Following the chain is a real change; saying so is not.
-  if grep -q '"extends"' "$TSCONFIG" 2>/dev/null && [ ! -s "$ALIASES" ]; then
+  if grep -qa '"extends"' "$TSCONFIG" 2>/dev/null && [ ! -s "$ALIASES" ]; then
     unknown "tsconfig.json uses \"extends\" and no alias was parsed from this file — the base config is not followed, so an aliased import here would be mistaken for a published package"
   fi
   if [ -s "$WORK/pathsbody" ] && [ ! -s "$ALIASES" ]; then
@@ -391,7 +391,7 @@ QUEUE="$WORK/queue"; SEEN="$WORK/seen"; EDGES="$WORK/edges"
 # on. Reachability is a property of the whole graph; it cannot be accumulated by a traversal
 # that visits each node once.
 enqueue() { # $1 = absolute file to walk
-  grep -Fxq -- "$1" "$SEEN" 2>/dev/null && return 0
+  grep -aFxq -- "$1" "$SEEN" 2>/dev/null && return 0
   printf '%s\n' "$1" >> "$SEEN"
   printf '%s\n' "$1" >> "$QUEUE"
 }
@@ -406,7 +406,7 @@ seeds_of() { # $1 = file
   while [ -s "$frontier" ]; do
     awk -F'\t' 'NR==FNR { want[$0]; next } ($2 in want) { print $1 }' "$frontier" "$EDGES" | sort -u > "$nxt"
     if [ -s "$nxt" ]; then
-      grep -Fxv -f "$vis" -- "$nxt" > "$nxt.new" 2>/dev/null || : > "$nxt.new"
+      grep -aFxv -f "$vis" -- "$nxt" > "$nxt.new" 2>/dev/null || : > "$nxt.new"
       mv "$nxt.new" "$nxt"
     fi
     [ -s "$nxt" ] || break
@@ -414,7 +414,7 @@ seeds_of() { # $1 = file
     mv "$nxt" "$frontier"
   done
   [ -s "$SEEDS" ] || return 0
-  grep -Fxf "$SEEDS" -- "$vis" 2>/dev/null | sort -u
+  grep -aFxf "$SEEDS" -- "$vis" 2>/dev/null | sort -u
 }
 
 rel() { printf '%s' "${1#"$ROOT"/}"; }
@@ -694,7 +694,12 @@ while IFS= read -r file; do
   while IFS= read -r term; do
     [ -n "$term" ] || continue
     set +e
-    hits="$(grep -nF -e "$term" -- "$file" 2>"$WORK/err")"
+    # `-a`, BECAUSE ONE BYTE MUST NOT HIDE THE SECRET. Without it a NUL anywhere in a module
+    # makes grep call the file binary and print nothing while exiting 1, which this gate reads
+    # as "term not present". Measured: a module holding SUPABASE_SERVICE_ROLE_KEY and a single
+    # NUL byte, reached from a page, reported `ok [service-role]`, exit 0. This one predates
+    # the tokenisers; it surfaced from the same finding in the other gate.
+    hits="$(grep -anF -e "$term" -- "$file" 2>"$WORK/err")"
     grc=$?
     set -e
     if [ "$grc" -gt 1 ]; then

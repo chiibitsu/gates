@@ -69,8 +69,14 @@ function tok(k, v,   again) {
       if (k == "W" && v == "table") { print "X\t\t"; st = 0 }
       else { st = 0; again = 1 }
     } else if (st == 9) {
-      if (k == "W" && v == "from") { print "X\t\t"; st = 0 }
+      if (k == "W" && v == "from") { st = 10 }
       else { st = 0; again = 1 }
+    } else if (st == 10) {
+      # A `delete from` is tier-3 only WITHOUT a where, which is what the note says. Emitting
+      # it for every delete made the note claim something the code beside it did not.
+      if (k == "W" && v == "where") st = 0
+      else if (k == "P" && v == ";") { print "X\t\t"; st = 0 }
+      else if (k == "W" && (v == "create" || v == "alter" || v == "drop" || v == "insert" || v == "update" || v == "truncate")) { print "X\t\t"; st = 0; again = 1 }
     } else if (st == 1) {
       if (k == "W" && (v == "global" || v == "local" || v == "temporary" || v == "temp" || v == "unlogged")) { }
       else if (k == "W" && v == "table") st = 2
@@ -160,7 +166,15 @@ function tok(k, v,   again) {
         # `create` then at most two modifier words then `table`, not "created" and "tables"
         # anywhere in the same sentence — `values ('created three tables last week')` was a
         # blocking UNKNOWN on an otherwise compliant file.
-        if (tolower(sv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+){0,2}table([^a-z]|$)/) ddl = 1
+        # `*`, NOT `{0,2}`. mawk 1.3.4 — the awk on Debian/Ubuntu and the one this repo names
+        # by hand — miscompiles an interval with n>=2 applied to a group whose body starts
+        # with a `+`-quantified bracket expression: it matches ZERO repetitions only. So the
+        # modifier allowance was inert and the test was exactly `create table`, which let
+        # `execute 'CREATE UNLOGGED TABLE public.x (id int)'` pass over silently. Verified
+        # against PostgreSQL 16: a persistent unlogged table, RLS off, gate green. The
+        # non-string path at the top of this scanner reads those modifiers correctly, so the
+        # gap was invisible from the fixtures.
+        if (tolower(sv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)*table([^a-z]|$)/) ddl = 1
         sv = ""; continue
       }
       sv = sv c; i++; continue
@@ -244,24 +258,41 @@ for up in "$MIG"/*.sql; do
   # tables took 33.5s, quadrupling per doubling. That is the same shape the awk accumulator
   # had — the fix for which had only moved it from awk into bash, which is worth saying out
   # loud rather than calling the quadratic bullet closed.
+  # `-a` ON EVERY grep THAT READS THESE RECORDS. Without it, one byte that is invalid in the
+  # ambient locale makes GNU grep declare the file binary and SUPPRESS the matching line while
+  # still exiting 0 — so the record never reaches $WORK_C and that table is never compared
+  # against RLS at all. Measured under LC_ALL=C.UTF-8, the locale on ubuntu-latest: a file
+  # creating `public.clean` and `public."año"` (LATIN1), neither with RLS, reported ONE
+  # violation where the previous revision reported two. A NUL byte does it in any locale.
+  # PostgreSQL 16 confirms the dropped table is real and its RLS is off. A silent pass chosen
+  # by an encoding, and it arrived with the change that made this comparison a grep.
   set +e
-  grep '^C	' "$WORK_TOK" | cut -f2- > "$WORK_C"
-  grep '^R	' "$WORK_TOK" | cut -f2- > "$WORK_R"
+  grep -a '^C	' "$WORK_TOK" | cut -f2- > "$WORK_C"
+  grep -a '^R	' "$WORK_TOK" | cut -f2- > "$WORK_R"
   set -e
 
   while IFS= read -r reason; do
     [ -n "$reason" ] || continue
-    unknown "$(basename "$up"): $reason — this gate could not read the statements after it, and will not call the file clean"
-  done < <(grep '^U	' "$WORK_TOK" | cut -f2 || true)
+    # THE REASON DECIDES THE SENTENCE. One message covered both kinds, and for a DDL string it
+    # was false: the scanner reads the statements after it perfectly well; what it does not
+    # read is the DDL inside the string. A message wider than the thing it describes is the
+    # defect this repository exists to catch.
+    case "$reason" in
+      ddl-inside-a-string-literal)
+        unknown "$(basename "$up"): a string literal here contains a 'create ... table' that \`execute\` would run. This gate reads strings as data, so it cannot say what that statement creates or whether RLS follows it" ;;
+      *)
+        unknown "$(basename "$up"): $reason — this gate could not read the statements after it, and will not call the file clean" ;;
+    esac
+  done < <(grep -a '^U	' "$WORK_TOK" | cut -f2 || true)
 
   while IFS="$(printf '\t')" read -r sch tbl; do
     [ -n "$tbl" ] || continue
     fail "$(basename "$up"): table '$sch.$tbl' created without 'enable row level security' in the same file"
-  done < <(grep -Fxv -f "$WORK_R" -- "$WORK_C" || true)
+  done < <(grep -aFxv -f "$WORK_R" -- "$WORK_C" || true)
 
   # destructive statements are tier-3 by note, not by block (non-negotiable 4). Emitted by
   # the scanner from the token stream, so a commented-out `drop table` is a comment.
-  if grep -q '^X	' "$WORK_TOK" 2>/dev/null; then
+  if grep -qa '^X	' "$WORK_TOK" 2>/dev/null; then
     echo "note [$GATE] $(basename "$up"): destructive statement present; this migration is tier-3"
   fi
 done
