@@ -325,7 +325,11 @@ header, which is the honest account of what that scanner does not do.
   `select … into`. **An unterminated quoted identifier, string or block comment is UNKNOWN,
   not a pass** — a scanner that lost sync read everything after it as something it is not,
   and one `"` inside an ordinary string literal (an inch mark in `values ('24" monitor')`)
-  is enough to do that.
+  is enough to do that. A quoted identifier may contain a tab or a **newline**; those are
+  escaped in the scanner's output and compared escaped, so a name containing one no longer
+  shifts the records after it — that shift once reported a single violation naming a table
+  that does not exist while silently dropping two real ones. The escaped form is what the
+  message prints, so `public."we<newline>ird"` reads as `public.we\nird`.
 - **The service-role gate tokenises JavaScript; it does not match it.** Strings, template
   literals, line and block comments and regex literals are recognised as what they are, and a
   specifier is emitted only from a real `from`/`import`/`require` position. This replaced a
