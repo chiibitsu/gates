@@ -315,13 +315,17 @@ header, which is the honest account of what that scanner does not do.
   on both. It does **not** read one inside a `'…'` string literal: a string is data to the
   scanner, and reading it named tables nobody created and sent fixers to edit their data —
   but a string containing both `create` and `table` is reported UNKNOWN rather than passed
-  over, because `execute` runs it. What it genuinely cannot read, as silent passes: a name
-  assembled at runtime (`execute format('create table %I …')` or string concatenation),
-  `select … into`, and a statement on a line where an earlier string literal contains `--`,
-  which the comment stripper takes for a comment. **An unterminated quoted identifier or
-  string is UNKNOWN, not a pass** — a scanner that lost sync read everything after it as
-  something it is not, and one `"` inside an ordinary string literal (an inch mark in
-  `values ('24" monitor')`) is enough to do that.
+  over, because `execute` runs it. Comments are recognised by the same scanner, not stripped by an
+  earlier stage: a stage that cannot see strings took `values ('x /* y')` for the start of a
+  block comment and deleted every line to the next `*/`, hiding a whole `create table` —
+  verified against PostgreSQL 16 as a real table left with RLS off — and the same swallow
+  turned a compliant migration containing `values ('/api/*')` red with a message naming a
+  string that does not exist. What it genuinely cannot read, as silent passes: a name
+  assembled at runtime (`execute format('create table %I …')` or string concatenation) and
+  `select … into`. **An unterminated quoted identifier, string or block comment is UNKNOWN,
+  not a pass** — a scanner that lost sync read everything after it as something it is not,
+  and one `"` inside an ordinary string literal (an inch mark in `values ('24" monitor')`)
+  is enough to do that.
 - **The service-role gate tokenises JavaScript; it does not match it.** Strings, template
   literals, line and block comments and regex literals are recognised as what they are, and a
   specifier is emitted only from a real `from`/`import`/`require` position. This replaced a
@@ -340,12 +344,15 @@ header, which is the honest account of what that scanner does not do.
   can tell that from an import, so a candidate carrying `<`, `>`, `{` or `}` is dropped as
   text. Node subpath imports (`#internal/db`) are UNKNOWN: they resolve through `package.json`
   `imports`, which this gate does not read.
-- **Both scanners are line-incremental, and that is a correctness property, not a speed one.**
-  The first version accumulated each file with `buf = buf $0 "\n"`, which mawk reallocates and
+- **Every scanner here is line-incremental, and the comparison is not a shell loop.** The
+  first version accumulated each file with `buf = buf $0 "\n"`, which mawk reallocates and
   copies every line: 12.1s on a 1.1MB generated types file against 0.11s for the greps it
-  replaced, and quadratic, so it got worse with size. `gates.yml` sets no `timeout-minutes`,
-  so that surfaces not as a red but as a job that takes minutes — the shape of the hang this
-  toolkit has already shipped once.
+  replaced, and quadratic. Fixing that left the same shape one stage downstream — a nested
+  bash loop comparing created tables against RLS-enabled ones, 33.5s for 2000 tables — which
+  is now a `grep -Fxv`, 0.10s. `gates.yml` sets no `timeout-minutes`, so either would have
+  surfaced not as a red but as a job taking minutes: the shape of the hang this toolkit has
+  already shipped once. Both numbers are here because the first fix was reported as closing
+  the problem while half of it was still there.
 - **The service-role gate resolves like TypeScript, with one deliberate divergence.** It
   follows `./`, `../`, absolute paths, and **every alias declared in tsconfig
   `compilerOptions.paths`** — not just `@/*` — plus a **`baseUrl` with no matching `paths`

@@ -170,6 +170,9 @@ END {
   # consumed the rest of the file and a `require("@/lib/admin")` below it reported `ok`,
   # exit 0, over a module reaching the secret.
   if (mode == 2 || mode == 1) print "N"
+  # A pending import( still open at end of file is the same report as one closed by a
+  # non-literal: the argument was never a literal this gate could read.
+  clearpend()
 }
 SCANAWK
 
@@ -240,30 +243,32 @@ TSCONFIG_RAW="$ROOT/tsconfig.json"
 # is not configuration.
 TSCONFIG="$WORK/tsconfig.json"
 if [ -f "$TSCONFIG_RAW" ]; then
+  # Line-incremental, like the two token scanners. It slurped, and the README bullet that
+  # disowns slurping sat two hundred lines above one still doing it.
   awk '
-    { buf = buf $0 "\n" }
-    END {
-      n = length(buf); i = 1
+    {
+      n = length($0); i = 1
       while (i <= n) {
-        c = substr(buf, i, 1)
+        c = substr($0, i, 1)
+        if (blk) {
+          if (c == "*" && substr($0, i + 1, 1) == "/") { blk = 0; i += 2; continue }
+          i++; continue
+        }
         if (c == "\"") {
           printf "%s", c; i++
           while (i <= n) {
-            c = substr(buf, i, 1)
-            if (c == "\\") { printf "%s", substr(buf, i, 2); i += 2; continue }
+            c = substr($0, i, 1)
+            if (c == "\\") { printf "%s", substr($0, i, 2); i += 2; continue }
             printf "%s", c; i++
             if (c == "\"") break
           }
           continue
         }
-        if (c == "/" && substr(buf, i + 1, 1) == "/") { while (i <= n && substr(buf, i, 1) != "\n") i++; continue }
-        if (c == "/" && substr(buf, i + 1, 1) == "*") {
-          i += 2
-          while (i <= n && !(substr(buf, i, 1) == "*" && substr(buf, i + 1, 1) == "/")) i++
-          i += 2; continue
-        }
+        if (c == "/" && substr($0, i + 1, 1) == "/") break
+        if (c == "/" && substr($0, i + 1, 1) == "*") { blk = 1; i += 2; continue }
         printf "%s", c; i++
       }
+      printf "\n"
     }
   ' "$TSCONFIG_RAW" > "$TSCONFIG" 2>/dev/null || cp -- "$TSCONFIG_RAW" "$TSCONFIG" 2>/dev/null || :
 fi

@@ -31,32 +31,7 @@ MIG="$ROOT/supabase/migrations"
 # the rest of that line. That is a real gap, not a safe one — a create table sharing that
 # line would go unchecked. A SQL parser is the fix if it ever bites; a regex that pretends
 # to know about quoting is not.
-strip_sql_comments() {
-  awk '
-    BEGIN { inblk = 0 }
-    {
-      line = $0; out = ""
-      while (length(line) > 0) {
-        if (inblk) {
-          p = index(line, "*/")
-          if (p == 0) { line = ""; break }
-          line = substr(line, p + 2); inblk = 0; out = out " "
-        } else {
-          pb = index(line, "/*"); pl = index(line, "--")
-          if (pl > 0 && (pb == 0 || pl < pb)) { out = out substr(line, 1, pl - 1); line = ""; break }
-          # A SPACE, not nothing. Concatenating the text before `/*` to the text after `*/`
-          # made `create/*x*/table public.orders` one word, `createtable`, and the statement
-          # a silent pass. A comment separates tokens; removing it must not join them.
-          if (pb > 0) { out = out substr(line, 1, pb - 1) " "; line = substr(line, pb + 2); inblk = 1 }
-          else { out = out line; line = "" }
-        }
-      }
-      print out
-    }
-  ' "$1"
-}
 
-STRIPPED="$(mktemp)"
 SQLSCAN="$(mktemp)"
 cat > "$SQLSCAN" <<'SQLSCANAWK'
 # Streaming SQL scanner. One record per line: kind <TAB> schema <TAB> table, where kind is
@@ -84,14 +59,36 @@ function tok(k, v,   again) {
     if (st == 0) {
       if (k == "W" && v == "create") st = 1
       else if (k == "W" && v == "alter") st = 4
+      # The destructive-statement note is emitted from the token stream too, so that the
+      # comment stripper can go away entirely rather than survive for one caller. A
+      # commented-out `drop table` is a comment, and a note claiming otherwise is a claim.
+      else if (k == "W" && v == "drop") st = 8
+      else if (k == "W" && v == "truncate") { print "X\t\t"; }
+      else if (k == "W" && v == "delete") st = 9
+    } else if (st == 8) {
+      if (k == "W" && v == "table") { print "X\t\t"; st = 0 }
+      else { st = 0; again = 1 }
+    } else if (st == 9) {
+      if (k == "W" && v == "from") { print "X\t\t"; st = 0 }
+      else { st = 0; again = 1 }
     } else if (st == 1) {
       if (k == "W" && (v == "global" || v == "local" || v == "temporary" || v == "temp" || v == "unlogged")) { }
       else if (k == "W" && v == "table") st = 2
       else { st = 0; again = 1 }
     } else if (st == 2) {
-      if (k == "W" && (v == "if" || v == "not" || v == "exists")) { }
+      # `IF NOT EXISTS` AS A SEQUENCE, not three words to swallow wherever they appear.
+      # Swallowing them lost `create table exists (id int)` and `create table if (id int)`
+      # entirely — both legal, both verified against PostgreSQL 16, and a create table this
+      # scanner does not see is a silent pass.
+      if (k == "W" && v == "if") st = 21
       else if (k == "W" || k == "Q") { nn = 1; P[1] = v; st = 3; wantpart = 0 }
       else { st = 0; again = 1 }
+    } else if (st == 21) {
+      if (k == "W" && v == "not") st = 22
+      else { nn = 1; P[1] = "if"; st = 3; wantpart = 0; again = 1 }
+    } else if (st == 22) {
+      if (k == "W" && v == "exists") st = 2
+      else { nn = 1; P[1] = "if"; st = 3; wantpart = 0; again = 1 }
     } else if (st == 3) {
       if (k == "D") wantpart = 1
       else if (wantpart && (k == "W" || k == "Q")) { P[++nn] = v; wantpart = 0 }
@@ -122,6 +119,26 @@ function tok(k, v,   again) {
   n = length($0); i = 1
   while (i <= n) {
     c = substr($0, i, 1)
+    # COMMENTS ARE STRIPPED HERE, NOT BY A STAGE THAT CANNOT SEE STRINGS. They used to be
+    # removed upstream by a scanner with no string state, which cost a defect in each
+    # direction and both were live:
+    #
+    #   values ('x /* y');  create table public.orders (id int);  values ('*/ z');
+    #     -> the `/*` INSIDE a string opened a block comment that deleted the create table
+    #        on the following line. `ok`, exit 0, over a table PostgreSQL 16 confirms is
+    #        created with RLS off. The two surviving quotes pair up, so the guard below
+    #        never fired either.
+    #   values ('/api/*');  create table public.orders …  alter table … enable row level …
+    #     -> the same swallow ate to end of file, the remaining odd `'` read as an
+    #        unterminated string, and a fully compliant migration went RED with a message
+    #        naming a string that does not exist in the source.
+    #
+    # One scanner that understands strings, identifiers and comments together has no such
+    # seam. An unterminated block comment is UNKNOWN, like every other lost sync.
+    if (inblk) {
+      if (c == "*" && substr($0, i + 1, 1) == "/") { inblk = 0; i += 2; continue }
+      i++; continue
+    }
     # A DOUBLE-QUOTED IDENTIFIER, possibly spanning lines. `""` inside it is one embedded
     # quote.
     if (inq) {
@@ -140,12 +157,17 @@ function tok(k, v,   again) {
       if (c == "'") {
         if (substr($0, i + 1, 1) == "'") { sv = sv "'"; i += 2; continue }
         ins = 0; i++
-        if (tolower(sv) ~ /create/ && tolower(sv) ~ /table/) ddl = 1
+        # `create` then at most two modifier words then `table`, not "created" and "tables"
+        # anywhere in the same sentence — `values ('created three tables last week')` was a
+        # blocking UNKNOWN on an otherwise compliant file.
+        if (tolower(sv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+){0,2}table([^a-z]|$)/) ddl = 1
         sv = ""; continue
       }
       sv = sv c; i++; continue
     }
     if (c == " " || c == "\t" || c == "\r") { i++; continue }
+    if (c == "-" && substr($0, i + 1, 1) == "-") break
+    if (c == "/" && substr($0, i + 1, 1) == "*") { inblk = 1; i += 2; continue }
     if (c == "\"") { inq = 1; qv = ""; i++; continue }
     if (c == "'")  { ins = 1; sv = ""; i++; continue }
     if (c ~ /[A-Za-z_]/) {
@@ -164,6 +186,7 @@ END {
   # A SCANNER THAT LOST SYNC MUST NOT REPORT A CLEAN FILE. An unterminated quoted identifier
   # or string means everything after it was read as something it is not, so the only honest
   # answer about the rest of the file is that this gate could not read it.
+  if (inblk) print "U\tunterminated-block-comment\t"
   if (inq) print "U\tunterminated-quoted-identifier\t"
   if (ins) print "U\tunterminated-string\t"
   # DDL inside a string literal is executed by `execute`, and this scanner treats the string
@@ -175,14 +198,13 @@ SQLSCANAWK
 WORK_TOK="$(mktemp)"
 WORK_C="$(mktemp)"
 WORK_R="$(mktemp)"
-trap 'rm -f "$STRIPPED" "$SQLSCAN" "$WORK_TOK" "$WORK_C" "$WORK_R"' EXIT
+trap 'rm -f "$SQLSCAN" "$WORK_TOK" "$WORK_C" "$WORK_R"' EXIT
 
 for up in "$MIG"/*.sql; do
   [ -e "$up" ] || continue
   case "$up" in *.down.sql) continue;; esac
   down="${up%.sql}.down.sql"
   [ -f "$down" ] || fail "no rollback: $(basename "$up") needs $(basename "$down")"
-  strip_sql_comments "$up" > "$STRIPPED"
   # TABLES CREATED HERE MUST ENABLE RLS HERE — DECIDED BY TOKENISING, NOT BY MATCHING.
   #
   # This check was a regex three times over and produced a finding in each of three
@@ -210,42 +232,36 @@ for up in "$MIG"/*.sql; do
   # wider than the name it was given, no case flag to fold a quoted identifier, and no line
   # boundary to hide a statement behind.
   : > "$WORK_C"; : > "$WORK_R"
-  awk -f "$SQLSCAN" "$STRIPPED" > "$WORK_TOK"
+  awk -f "$SQLSCAN" "$up" > "$WORK_TOK"
 
   # ONE LINE PER RECORD, TAB-SEPARATED, VALUES ESCAPED. It was three lines per record, and a
   # quoted identifier containing a newline then shifted every following triple: a file with
   # `public."we<newline>ird"` and two more non-compliant tables reported ONE violation, naming
-  # `public.we` — a table that does not exist — and did not report the other two at all. A
-  # reader who "fixed" the named table would have got a green over an unguarded schema. The
-  # comment beside it claimed the limitation was "recorded in the README"; the word newline
-  # does not appear in that file. Escaping is exact for comparison, because both sides are
-  # escaped by the same function, and the escaped form is what the message prints.
-  c_n=0; r_n=0
-  while IFS="$(printf '\t')" read -r kind sch tbl; do
-    case "$kind" in
-      C) c_n=$((c_n+1)); C_SCH[$c_n]="$sch"; C_TBL[$c_n]="$tbl" ;;
-      R) r_n=$((r_n+1)); R_SCH[$r_n]="$sch"; R_TBL[$r_n]="$tbl" ;;
-      U) unknown "$(basename "$up"): $sch — this gate could not read the statements after it, and will not call the file clean" ;;
-    esac
-  done < "$WORK_TOK"
+  # `public.we` — a table that does not exist — and did not report the other two at all.
+  # Escaping is exact for comparison, because both sides are escaped by the same function.
+  #
+  # COMPARED WITH grep, NOT A NESTED SHELL LOOP. The loop was O(created x rls): 2000 compliant
+  # tables took 33.5s, quadrupling per doubling. That is the same shape the awk accumulator
+  # had — the fix for which had only moved it from awk into bash, which is worth saying out
+  # loud rather than calling the quadratic bullet closed.
+  set +e
+  grep '^C	' "$WORK_TOK" | cut -f2- > "$WORK_C"
+  grep '^R	' "$WORK_TOK" | cut -f2- > "$WORK_R"
+  set -e
 
-  i=1
-  while [ "$i" -le "$c_n" ]; do
-    found=0
-    j=1
-    while [ "$j" -le "$r_n" ]; do
-      if [ "${C_SCH[$i]}" = "${R_SCH[$j]}" ] && [ "${C_TBL[$i]}" = "${R_TBL[$j]}" ]; then found=1; break; fi
-      j=$((j+1))
-    done
-    if [ "$found" -eq 0 ]; then
-      fail "$(basename "$up"): table '${C_SCH[$i]}.${C_TBL[$i]}' created without 'enable row level security' in the same file"
-    fi
-    i=$((i+1))
-  done
-  unset C_SCH C_TBL R_SCH R_TBL
+  while IFS= read -r reason; do
+    [ -n "$reason" ] || continue
+    unknown "$(basename "$up"): $reason — this gate could not read the statements after it, and will not call the file clean"
+  done < <(grep '^U	' "$WORK_TOK" | cut -f2 || true)
 
-  # destructive statements outside a WHERE are tier-3 by regex (non-negotiable 4); flag, do not block
-  if grep -qiE "^[[:space:]]*(drop[[:space:]]+table|truncate|delete[[:space:]]+from[[:space:]]+[a-z_.\"]+[[:space:]]*;)" "$STRIPPED"; then
+  while IFS="$(printf '\t')" read -r sch tbl; do
+    [ -n "$tbl" ] || continue
+    fail "$(basename "$up"): table '$sch.$tbl' created without 'enable row level security' in the same file"
+  done < <(grep -Fxv -f "$WORK_R" -- "$WORK_C" || true)
+
+  # destructive statements are tier-3 by note, not by block (non-negotiable 4). Emitted by
+  # the scanner from the token stream, so a commented-out `drop table` is a comment.
+  if grep -q '^X	' "$WORK_TOK" 2>/dev/null; then
     echo "note [$GATE] $(basename "$up"): destructive statement present; this migration is tier-3"
   fi
 done
