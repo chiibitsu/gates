@@ -137,17 +137,42 @@ sends someone hunting for a bug in their code rather than a blind spot in the ga
 
 ## How to call it
 
+This snippet carries `<sha-from-the-releases-table>` rather than a real hash, and that is the
+one place in this repository where a placeholder is right: it showed `25a1ca1` / v1.0.3 for
+three releases after that pin stopped being current, and a stale real SHA is copied without
+hesitation while a placeholder cannot be. `caller-template.yml` ships a real SHA because it has
+to run; this prose does not.
+
 Copy `caller-template.yml` into your repo as `.github/workflows/gates.yml`. It ships a real
-SHA rather than a placeholder, and that SHA is the **previous** release — replace both
-occurrences with the one you want from the Releases table below:
+SHA rather than a placeholder, and that SHA is the **previous** release. Replace **all three**
+occurrences with the one you want from the Releases table below — the `gates:` `uses:` ref,
+the `gates_ref:` under it, and the `review:` `uses:` ref. The first two must stay identical to
+each other: a reusable workflow cannot discover its own commit, so the ref it runs from has to
+be handed to it, and a mismatch runs one release's workflow over another release's gates. This
+sentence said "both occurrences" over a snippet containing three, which is a count narrower
+than the thing it describes — the defect this repository exists to catch, in its own
+instructions.
 
 ```yaml
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@25a1ca1f7ad7875138dd943657a5f7f1a3aa1809  # v1.0.3
+    uses: chiibitsu/gates/.github/workflows/gates.yml@<sha-from-the-releases-table>  # v1.2.1
     with:
-      gates_ref: 25a1ca1f7ad7875138dd943657a5f7f1a3aa1809 # v1.0.3
+      gates_ref: <sha-from-the-releases-table> # v1.2.1
+
+  # The draft-stage reviewer. Needs a repository secret CLAUDE_CODE_OAUTH_TOKEN, and the
+  # permissions block because a called workflow can only narrow the caller's token, never
+  # widen it — without it the tally step 403s on a read-only default.
+  review:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    uses: chiibitsu/gates/.github/workflows/review.yml@<sha-from-the-releases-table> # v1.2.1
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
 Pin a SHA, not a tag — that is the same rule `gates/actions-sha-pinned.sh` enforces on
@@ -233,7 +258,7 @@ Five live in the repo being checked. The sixth belongs to the template, not here
 
 ## Releases
 
-The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.2.0` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
+The Commit column names a **tag** for the current release and a SHA for superseded ones, and that asymmetry is forced: the table lives in the commit being tagged, so it cannot contain that commit's own hash. Resolve the tag — `git rev-list -n1 v1.2.1` — and pin the SHA you get. Pin a SHA, never a tag: a tag is a movable name, and this table exists because names have been wrong here before.
 
 That rule applies to everything this repo pins, not only to itself, and the reviewer's action is the measured case. On 2026-09-08, `anthropics/claude-code-action` resolved as:
 
@@ -248,8 +273,9 @@ A release's `CITATION.cff` names its own version — that is the part that must 
 
 | Version | Commit | Use it? |
 |---|---|---|
-| **v1.2.0** | tag `v1.2.0` — resolve with `git rev-list -n1 v1.2.0`, or read it off the release page | **Yes — use this one.** Adds the draft-stage reviewer: `REVIEW.md`, `.github/workflows/review.yml`, and `fixtures/review/bad/`. **The gates are byte-identical to v1.1.0** — nothing that blocks changed, and a consumer that adopts this without wiring the reviewer gets exactly v1.1.0's behaviour. Carries v1.0.2's known false green in `actions-sha-pinned.sh`, described below. |
-| v1.1.0 | `7832ea6` | **Usable, and superseded by v1.2.0** — same six gates, no reviewer. Added `service-role.sh`, the UNKNOWN outcome, and `gates/MANIFEST.txt` with a both-directions check against the `gates/` directory. Adopting it can turn a consumer red on code that was green under v1.0.4, because `service-role.sh` did not exist to check it; that is a finding, not a regression. |
+| **v1.2.1** | tag `v1.2.1` — resolve with `git rev-list -n1 v1.2.1`, or read it off the release page | **Yes — use this one.** Fixes three defects in `service-role.sh` that v1.1.0 and v1.2.0 both shipped, each reproduced before the fix and each carrying a fixture: an ordinary circular import **did not terminate** (a hang, which reports nothing at all); one file reached by two spellings was counted twice, printing two findings each claiming "1 request-path module(s)"; and a multi-line `await import(` was a **false green** — `ok`, exit 0, over a page reaching `SUPABASE_SERVICE_ROLE_KEY`. Also fixes a concurrency key in `review.yml` that collapsed on non-PR events. Carries v1.0.2's known false green in `actions-sha-pinned.sh`, described below. |
+| v1.2.0 | `44f6125` | **Do not use.** Its `service-role.sh` is byte-identical to v1.1.0's and carries all three defects listed under v1.2.1 — including a false green on a multi-line dynamic import and a walk that does not terminate on a circular one. The reviewer it adds is sound; the gate underneath it is not. Move to v1.2.1. |
+| v1.1.0 | `7832ea6` | **Do not use** — same three `service-role.sh` defects as v1.2.0, described in the v1.2.1 row. Six gates, no reviewer. Added `service-role.sh`, the UNKNOWN outcome, and `gates/MANIFEST.txt` with a both-directions check against the `gates/` directory. Adopting it can turn a consumer red on code that was green under v1.0.4, because `service-role.sh` did not exist to check it; that is a finding, not a regression. |
 | v1.0.4 | `e075a93` | **Usable, and superseded by v1.1.0** — five gates instead of six, so nothing checks whether the request path can reach the service-role secret. Its `CITATION.cff` names the version on its tag, which v1.0.0 and v1.0.1 also did and v1.0.2 and v1.0.3 did not. Gates byte-identical to v1.0.2 and v1.0.3, so it carries their one known false green, described below. |
 | v1.0.3 | `25a1ca1` | **Do not cite.** Its gates are correct and identical to v1.0.2's, so a pin at this SHA works. But its `CITATION.cff` says `1.0.2` and its caller template says `v1.0.2` — this tag reproduces the exact defect it was cut to fix. The cause is structural and is the useful part: the correction to a version's metadata is *made by* the pull request, so it lands in a commit **after** the one being tagged. Tagging the merged head of the PR that reports the previous version is guaranteed to be one behind. A release has to declare its own version **before** it is tagged, which is what v1.0.4 does. |
 | v1.0.2 | `c3e3f49` | **Usable, and superseded by v1.0.4** — same gates, wrong version metadata inside the tag. Everything six review rounds found in v1.0.0 and v1.0.1 is fixed here, each fix carrying the minimal fixture that proves the shape is still caught. It has **one known false green**, reproducible: `steps: [{uses: a/b@main}, {uses: c/d@v1}]` reports ok. The rule that produces it is stated once, in Known gaps below, and deliberately not paraphrased here — a first draft of this row paraphrased it and got the rule wrong in a different way than the gap section did, which is how two statements of one fact always end. Treat this release as a first line, never as the only one. An earlier draft of this row claimed no known false green while the gap below already described one — the claim was wrong, and it is corrected here rather than quietly dropped. |
@@ -276,15 +302,110 @@ header, which is the honest account of what that scanner does not do.
   here and is called from consumer repositories; wiring a self-call is a separate change, so
   until then the fixture procedure is the only thing that exercises it. Stated because a
   reviewer nobody has run is a reviewer nobody has seen fail.
-- **The service-role gate reads imports with a regex, not a parser.** It follows literal
-  `from`, `import` and `require` specifiers, resolving `./`, `../`, absolute paths, and
-  **every alias declared in tsconfig `compilerOptions.paths`** — not just `@/*`. A specifier
-  matching no declared alias is treated as a published package; a specifier that matches one
-  and resolves to no file is UNKNOWN, never skipped. If the `paths` object is present and no
-  alias can be parsed out of it, that is UNKNOWN too. A specifier that appears inside a
-  comment or a string is
-  followed as though it were real — over-inclusive, which costs a false red rather than a
-  false green. What it cannot follow at all it calls UNKNOWN.
+- **The migrations-lint gate tokenises SQL; it does not match it.** Statements are scanned
+  once — quoted identifiers with their `""` escapes, any schema or database qualifier,
+  `unlogged`/`temp`/`temporary`, `IF [NOT] EXISTS`, `ALTER TABLE ONLY`, a statement spanning
+  lines — and the created and RLS-enabled **(schema, table) pairs are compared as strings**.
+  So RLS on `archive.orders` does not satisfy a `create table public.orders`; an unqualified
+  name normalises to `public`; and a quoted identifier keeps its case, because PostgreSQL
+  folds `Orders` to `orders` but keeps `"Orders"` distinct — Prisma and Drizzle emit the
+  quoted PascalCase form. Three successive regex versions each traded one error for another
+  here; the pair comparison leaves no interpolated pattern to be wider than the name it was
+  given. A `'…'` string and a `$$`/`$tag$` dollar-quoted body are both **data** to the scanner.
+  Reading them named tables nobody created: `create function f() … as $$ … create table
+  public.tmp … $$` was a violation naming `public.tmp`, which does not exist at definition
+  time and is created only when the function runs. But a string or body containing a
+  `create … table` **sequence** is UNKNOWN rather than passed over, because `execute` and
+  `DO $$` do run — UNKNOWN is still red, and it does not claim a violation the gate has not
+  established. Sequence, not two words anywhere: Sequence with **at most two modifier words**, not two words
+  anywhere and not any number: `'created three tables last week'` and `'To create a new
+  monthly revenue table, run the report'` are prose and pass, while `'CREATE UNLOGGED TABLE …'`
+  does not. The bound was once written `{0,2}`, which **mawk miscompiles** to zero repetitions
+  when the group begins with a `+`-quantified bracket, so every modifier form passed silently;
+  replacing it with `*` fixed that and made the allowance unbounded, so English prose blocked
+  a compliant migration. It is two optional groups now — the bound was always the point, only
+  its spelling was wrong, twice. Comments are recognised by the same scanner, not stripped by an
+  earlier stage: a stage that cannot see strings took `values ('x /* y')` for the start of a
+  block comment and deleted every line to the next `*/`, hiding a whole `create table` —
+  verified against PostgreSQL 16 as a real table left with RLS off — and the same swallow
+  turned a compliant migration containing `values ('/api/*')` red with a message naming a
+  string that does not exist. What it genuinely cannot read, as silent passes: a name
+  assembled at runtime (`execute format('create table %I …')` or string concatenation) and
+  `select … into`. **An unterminated quoted identifier, string, block comment or dollar-quoted
+  body is UNKNOWN, not a pass** — a scanner that lost sync read everything after it as
+  something it is not. A `"` inside an ordinary string literal (an inch mark in
+  `values ('24" monitor')`) is *not* one of those: it is string data, and reads as such.
+  It was not always — before the scanner had a string state that one byte opened a quoted
+  identifier that hid every statement after it — which is why the case is named here rather
+  than left to be rediscovered. A quoted identifier may contain a tab or a **newline**; those are
+  escaped in the scanner's output and compared escaped, so a name containing one no longer
+  shifts the records after it — that shift once reported a single violation naming a table
+  that does not exist while silently dropping two real ones. The escaped form is what the
+  message prints, so `public."we<newline>ird"` reads as `public.we\nird`.
+- **The service-role gate tokenises JavaScript; it does not match it.** Strings, template
+  literals, line and block comments and regex literals are recognised as what they are, and a
+  specifier is emitted only from a real `from`/`import`/`require` position. This replaced a
+  `grep -o` extractor whose non-overlapping window let a string ending in the word `from`
+  consume the following import into one invented span — a defect with no correct filter,
+  because reporting the span was a blocking UNKNOWN on ordinary source (`Array.from(",")`, a
+  regex literal, `{ note: "Imported from " }`) and dropping it lost a real import that had
+  been swallowed. Both were measured, in three consecutive review rounds, before the
+  extractor itself was replaced. A multi-line `await import(` is followed; a `//` comment no
+  longer runs into the code after it; `import(/* webpackChunkName */ "./x")` is read as the
+  literal import it is. **A template literal or block comment still open at end of file is
+  UNKNOWN**, because a scanner that lost sync read the rest of the file as something it is
+  not — one stray backtick in JSX text otherwise consumed everything below it, and a
+  `require("@/lib/admin")` under it reported `ok`. What it still cannot read is **JSX text**:
+  `<p>Copied from "a" to "b"</p>` puts `from` before a quote and nothing short of a JSX parser
+  can tell that from an import, so a candidate carrying `<`, `>`, `{` or `}` is dropped as
+  text. Node subpath imports (`#internal/db`) are UNKNOWN: they resolve through `package.json`
+  `imports`, which this gate does not read.
+- **Every `grep` over file content passes `-a`**, in all six shell gates and in `lib.sh`'s
+  shared `tgrep`. Without it, one byte that is invalid in the ambient locale makes GNU grep
+  declare a file binary, print nothing and **exit 0** with a note on stderr — which a gate
+  reads as "not found". Measured: a module holding `SUPABASE_SERVICE_ROLE_KEY` plus a single
+  NUL byte, reached from a page, reported `ok`, exit 0; the same byte hid a `NEXT_PUBLIC_`
+  service-key name from `nextjs-env` and an unpinned `uses:` ref from `actions-sha-pinned`;
+  and a migration creating a table whose quoted name held a LATIN1 byte had that table dropped
+  from the comparison entirely while the clean table beside it was still reported, so the loss
+  looked like a smaller violation count rather than a missing check. One byte must not decide
+  whether a gate can see a secret.
+
+  The exit status is worth stating exactly, because an earlier version of this bullet had it
+  backwards: grep exits **0**, not non-zero. Any guard written around a non-zero status —
+  `service-role` has one — would not have caught this, and did not.
+- **Every scanner here is line-incremental, and the comparison is not a shell loop.** The
+  first version accumulated each file with `buf = buf $0 "\n"`, which mawk reallocates and
+  copies every line: 12.1s on a 1.1MB generated types file against 0.11s for the greps it
+  replaced, and quadratic. Fixing that left the same shape one stage downstream — a nested
+  bash loop comparing created tables against RLS-enabled ones, 33.5s for 2000 tables — which
+  is now a `grep -Fxv`, 0.10s. `gates.yml` sets no `timeout-minutes`, so either would have
+  surfaced not as a red but as a job taking minutes: the shape of the hang this toolkit has
+  already shipped once. Both numbers are here because the first fix was reported as closing
+  the problem while half of it was still there.
+- **The service-role gate resolves like TypeScript, with one deliberate divergence.** It
+  follows `./`, `../`, absolute paths, and **every alias declared in tsconfig
+  `compilerOptions.paths`** — not just `@/*` — plus a **`baseUrl` with no matching `paths`
+  entry**, which is Next.js's documented "Absolute Imports" and which was a false green
+  chosen by nothing but the spelling of the import. `baseUrl` arms on the presence of the
+  key, read from a **comment-stripped** copy of tsconfig.json, because a commented-out
+  `// "baseUrl": "."` is not configuration. A specifier matching no alias is called a
+  published package **only if it could be one** — tested against npm's name shape, so
+  `@/lib/secret` is UNKNOWN, not a dependency to skip. One that matches an alias and resolves
+  to no file is UNKNOWN, never skipped; a `paths` object nothing parses out of is UNKNOWN too.
+  It maps the **emitted** extension back to the source (`./m.mjs` → `m.mts`, `.cjs` → `.cts`,
+  `.js` → `.ts`/`.tsx`) as `moduleResolution: nodenext` requires. **The divergence:
+  implementation before declaration.** TypeScript resolves `./admin.js` to `admin.d.ts` when
+  both exist; this gate takes `admin.js`, because a declaration file by construction cannot
+  hold a secret and the question here is what code runs in the request path, not where the
+  types are.
+- **The service-role gate does not follow tsconfig `extends`.** Aliases are read from the
+  repo's own `tsconfig.json` only. TypeScript does not deep-merge `paths` — measured with
+  tsc 5.6.3: a child that declares `paths` REPLACES the base's object entirely, so a base's
+  `@/*` is already dead in that tree — but a child that declares `extends` and no `paths` of
+  its own inherits them, and this gate cannot see them. That case is UNKNOWN, not a pass.
+  A `baseUrl` **inherited from a base config** is not read either, which makes alias targets
+  fail to resolve and go UNKNOWN: a false red, and the direction this toolkit errs in.
 - **The service-role gate does not look inside published packages.** A bare specifier
   (`react`, `@supabase/ssr`) is out of scope by definition, so a third-party module that
   reads `process.env.SUPABASE_SECRET_KEY` itself is invisible to it. Repo source is what it

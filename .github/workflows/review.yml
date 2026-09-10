@@ -38,13 +38,39 @@ permissions:
   id-token: write
 
 concurrency:
-  group: review-${{ github.event.pull_request.number }}
+  # The fallback is not decoration. `github.event.pull_request.number` is EMPTY on any event
+  # that is not a pull request, and the caller template triggers on `[pull_request, push]`, so
+  # every push run collapsed into one shared group key of `review-` and cancelled the previous
+  # one. Harmless only for as long as this job stays skipped on push — which is a property of
+  # the `if` below, not of the group, and the two are not written down together anywhere else.
+  # A concurrency key that silently means "all of them" is the same shape as a check that
+  # silently means "nothing".
+  group: review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   review:
     name: Draft review
-    if: github.event.pull_request.draft == true
+    # DRAFT, AND NOT FROM A FORK. The second half is about what a secret is worth on each
+    # trigger, and it was raised as an exfiltration risk — "a PR can rewrite the caller job and
+    # read CLAUDE_CODE_OAUTH_TOKEN". The load-bearing distinction is the trigger word: the
+    # caller runs on `pull_request`, NOT `pull_request_target`. On `pull_request` a fork's PR
+    # gets no repository secrets at all, so there is nothing there to read; and a same-repo
+    # branch is pushed by someone who already has write access, which is not a boundary this
+    # trigger was ever holding. So the risk as stated does not hold here.
+    #
+    # What DOES hold is duller and still worth the line: on a fork PR the secret expression
+    # resolves to empty while `review.yml` declares it `required: true`, so the reviewer is red
+    # on every fork PR for a reason having nothing to do with the code — the same shape as the
+    # 403 the `permissions:` note in caller-template.yml exists to prevent. Skipping is the
+    # honest outcome: as with a ready PR, `skipped` is an ABSENCE and is not claimed as a pass.
+    #
+    # This is reasoned from GitHub's documented trigger semantics, not measured: a fork PR
+    # against this repository is not something this branch can stage. Stated so the next reader
+    # knows which kind of claim it is.
+    if: >-
+      github.event.pull_request.draft == true
+      && github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -132,7 +158,12 @@ jobs:
       # finishing. If the count file is missing or unparseable the run says UNKNOWN and goes RED:
       # there is no third colour, and a reviewer that died is not a clean bill of health.
       - name: Post the tally
-        if: always()
+        # success() || failure(), NOT always(). With cancel-in-progress on, a superseded run is
+        # CANCELLED, and always() runs this step there too — so every push to a draft PR left a
+        # spurious "UNKNOWN — the reviewer did not report a count" comment from the run that was
+        # deliberately killed. The tally must be unmissable when the reviewer ran; it must not
+        # narrate a run that was cancelled on purpose.
+        if: success() || failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}

@@ -31,45 +31,307 @@ MIG="$ROOT/supabase/migrations"
 # the rest of that line. That is a real gap, not a safe one — a create table sharing that
 # line would go unchecked. A SQL parser is the fix if it ever bites; a regex that pretends
 # to know about quoting is not.
-strip_sql_comments() {
-  awk '
-    BEGIN { inblk = 0 }
-    {
-      line = $0; out = ""
-      while (length(line) > 0) {
-        if (inblk) {
-          p = index(line, "*/")
-          if (p == 0) { line = ""; break }
-          line = substr(line, p + 2); inblk = 0
-        } else {
-          pb = index(line, "/*"); pl = index(line, "--")
-          if (pl > 0 && (pb == 0 || pl < pb)) { out = out substr(line, 1, pl - 1); line = ""; break }
-          if (pb > 0) { out = out substr(line, 1, pb - 1); line = substr(line, pb + 2); inblk = 1 }
-          else { out = out line; line = "" }
-        }
-      }
-      print out
-    }
-  ' "$1"
-}
 
-STRIPPED="$(mktemp)"
-trap 'rm -f "$STRIPPED"' EXIT
+SQLSCAN="$(mktemp)"
+cat > "$SQLSCAN" <<'SQLSCANAWK'
+# Streaming SQL scanner. One record per line: kind <TAB> schema <TAB> table, where kind is
+# "C" (create table), "R" (RLS enabled) or "U" (this scanner could not answer). Values are
+# escaped, because a quoted identifier may contain a tab or a newline and a delimiter a value
+# can contain is not a delimiter.
+#
+# LINE-INCREMENTAL, NOT SLURPED. The first version built the whole file with `buf = buf $0
+# "\n"`, which mawk reallocates and copies every line: 12.1s on a 1.1MB file against 0.11s for
+# the greps it replaced, and quadratic, so it got worse with size. A gates job that takes
+# minutes and scales the wrong way is the shape of the hang this repository has already been
+# bitten by once. State is carried across lines instead; nothing accumulates but the current
+# token and the current name.
+function esc(v) { gsub(/\\/, "\\\\", v); gsub(/\t/, "\\t", v); gsub(/\n/, "\\n", v); return v }
+function emitpair(kind,   tbl, sch) {
+  if (nn == 0) return
+  tbl = P[nn]; sch = (nn >= 2) ? P[nn - 1] : "public"
+  if (tbl == "") return
+  print kind "\t" esc(sch) "\t" esc(tbl)
+}
+function tok(k, v,   again) {
+  again = 1
+  while (again) {
+    again = 0
+    if (st == 0) {
+      if (k == "W" && v == "create") st = 1
+      else if (k == "W" && v == "alter") st = 4
+      # The destructive-statement note is emitted from the token stream too, so that the
+      # comment stripper can go away entirely rather than survive for one caller. A
+      # commented-out `drop table` is a comment, and a note claiming otherwise is a claim.
+      else if (k == "W" && v == "drop") st = 8
+      else if (k == "W" && v == "truncate") { print "X\t\t"; }
+      else if (k == "W" && v == "delete") st = 9
+    } else if (st == 8) {
+      if (k == "W" && v == "table") { print "X\t\t"; st = 0 }
+      else { st = 0; again = 1 }
+    } else if (st == 9) {
+      if (k == "W" && v == "from") { st = 10 }
+      else { st = 0; again = 1 }
+    } else if (st == 10) {
+      # A `delete from` is tier-3 only WITHOUT a where, which is what the note says. Emitting
+      # it for every delete made the note claim something the code beside it did not.
+      if (k == "W" && v == "where") st = 0
+      else if (k == "P" && v == ";") { print "X\t\t"; st = 0 }
+      else if (k == "W" && (v == "create" || v == "alter" || v == "drop" || v == "insert" || v == "update" || v == "truncate")) { print "X\t\t"; st = 0; again = 1 }
+    } else if (st == 1) {
+      if (k == "W" && (v == "global" || v == "local" || v == "temporary" || v == "temp" || v == "unlogged")) { }
+      else if (k == "W" && v == "table") st = 2
+      else { st = 0; again = 1 }
+    } else if (st == 2) {
+      # `IF NOT EXISTS` AS A SEQUENCE, not three words to swallow wherever they appear.
+      # Swallowing them lost `create table exists (id int)` and `create table if (id int)`
+      # entirely — both legal, both verified against PostgreSQL 16, and a create table this
+      # scanner does not see is a silent pass.
+      if (k == "W" && v == "if") st = 21
+      else if (k == "W" || k == "Q") { nn = 1; P[1] = v; st = 3; wantpart = 0 }
+      else { st = 0; again = 1 }
+    } else if (st == 21) {
+      if (k == "W" && v == "not") st = 22
+      else { nn = 1; P[1] = "if"; st = 3; wantpart = 0; again = 1 }
+    } else if (st == 22) {
+      if (k == "W" && v == "exists") st = 2
+      else { nn = 1; P[1] = "if"; st = 3; wantpart = 0; again = 1 }
+    } else if (st == 3) {
+      if (k == "D") wantpart = 1
+      else if (wantpart && (k == "W" || k == "Q")) { P[++nn] = v; wantpart = 0 }
+      else if (wantpart) { st = 0; nn = 0; again = 1 }
+      else { emitpair("C"); st = 0; nn = 0; again = 1 }
+    } else if (st == 4) {
+      if (k == "W" && v == "table") st = 5
+      else { st = 0; again = 1 }
+    } else if (st == 5) {
+      # `only` is reserved and can be swallowed. `if` and `exists` are NOT — they are legal
+      # table names, which the create side already knows. Swallowing them here bound `enable`
+      # as the table name of `alter table if enable row level security`, so no R record was
+      # emitted and a compliant file reported a violation.
+      if (k == "W" && v == "only") { }
+      else if (k == "W" && v == "if") st = 51
+      else if (k == "W" || k == "Q") { nn = 1; P[1] = v; st = 6; wantpart = 0 }
+      else { st = 0; again = 1 }
+    } else if (st == 51) {
+      if (k == "W" && v == "exists") st = 5
+      else { nn = 1; P[1] = "if"; st = 6; wantpart = 0; again = 1 }
+    } else if (st == 6) {
+      if (k == "D") wantpart = 1
+      else if (wantpart && (k == "W" || k == "Q")) { P[++nn] = v; wantpart = 0 }
+      else if (wantpart) { st = 0; nn = 0; again = 1 }
+      else { st = 7; es = 0; again = 1 }
+    } else if (st == 7) {
+      if (k == "W" && es == 0 && v == "enable") es = 1
+      else if (k == "W" && es == 1 && v == "row") es = 2
+      else if (k == "W" && es == 2 && v == "level") es = 3
+      else if (k == "W" && es == 3 && v == "security") { emitpair("R"); st = 0; nn = 0 }
+      else { st = 0; nn = 0; again = 1 }
+    }
+  }
+}
+{
+  n = length($0); i = 1
+  while (i <= n) {
+    c = substr($0, i, 1)
+    # COMMENTS ARE STRIPPED HERE, NOT BY A STAGE THAT CANNOT SEE STRINGS. They used to be
+    # removed upstream by a scanner with no string state, which cost a defect in each
+    # direction and both were live:
+    #
+    #   values ('x /* y');  create table public.orders (id int);  values ('*/ z');
+    #     -> the `/*` INSIDE a string opened a block comment that deleted the create table
+    #        on the following line. `ok`, exit 0, over a table PostgreSQL 16 confirms is
+    #        created with RLS off. The two surviving quotes pair up, so the guard below
+    #        never fired either.
+    #   values ('/api/*');  create table public.orders …  alter table … enable row level …
+    #     -> the same swallow ate to end of file, the remaining odd `'` read as an
+    #        unterminated string, and a fully compliant migration went RED with a message
+    #        naming a string that does not exist in the source.
+    #
+    # One scanner that understands strings, identifiers and comments together has no such
+    # seam. An unterminated block comment is UNKNOWN, like every other lost sync.
+    if (inblk) {
+      if (c == "*" && substr($0, i + 1, 1) == "/") { inblk = 0; i += 2; continue }
+      i++; continue
+    }
+    # A DOUBLE-QUOTED IDENTIFIER, possibly spanning lines. `""` inside it is one embedded
+    # quote.
+    if (inq) {
+      if (c == "\"") {
+        if (substr($0, i + 1, 1) == "\"") { qv = qv "\""; i += 2; continue }
+        inq = 0; i++; tok("Q", qv); qv = ""; continue
+      }
+      qv = qv c; i++; continue
+    }
+    # A SINGLE-QUOTED STRING. This state did not exist, and without it ONE `"` inside an
+    # ordinary string literal — an inch mark, a quoted word in prose — opened an identifier
+    # that ate every following statement. Measured: a file whose only `"` was in
+    # `values ('24" monitor')` and whose `create table` had no RLS anywhere reported `ok`,
+    # exit 0. A silent pass, introduced by the rewrite that was meant to end them.
+    if (ins) {
+      if (c == "'") {
+        if (substr($0, i + 1, 1) == "'") { sv = sv "'"; i += 2; continue }
+        ins = 0; i++
+        # `create` then at most two modifier words then `table`, not "created" and "tables"
+        # anywhere in the same sentence — `values ('created three tables last week')` was a
+        # blocking UNKNOWN on an otherwise compliant file.
+        # TWO OPTIONAL GROUPS, which is the bound written in a form mawk compiles. `{0,2}`
+        # was the obvious spelling and mawk 1.3.4 — the awk on Debian/Ubuntu — miscompiles an
+        # interval with n>=2 applied to a group whose body starts with a `+`-quantified
+        # bracket: it matches ZERO repetitions, so the allowance was inert, the test was
+        # exactly `create table`, and `execute 'CREATE UNLOGGED TABLE …'` passed over.
+        #
+        # Replacing it with `*` fixed that and broke the other side: unbounded, so ordinary
+        # English prose matched. Measured on a compliant migration —
+        # `values ('To create a new monthly revenue table, run the report')` — UNKNOWN, exit
+        # 1, on a file nothing executes. Seeding help text was enough to block the branch.
+        # The bound is the point; only its spelling was wrong.
+        if (tolower(sv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)?([a-z]+[ \t\n]+)?table([^a-z]|$)/) ddl = 1
+        sv = ""; continue
+      }
+      sv = sv c; i++; continue
+    }
+    # A DOLLAR-QUOTED BODY IS DATA, like any other string. Scanning it as SQL made
+    # `create function f() ... as $$ begin create table public.tmp (id int); end $$;` a FAIL
+    # naming public.tmp — a table that does not exist at definition time and is created only
+    # when the function runs. A red on a compliant file, naming a table nobody created.
+    #
+    # `do $$ ... $$` DOES execute immediately, so a create table in one is real — but the gate
+    # cannot see whether RLS follows it inside the body either, so the honest answer for both
+    # is the same as for `execute '...'`: UNKNOWN, which is still red and still blocks. What
+    # it must not do is name a table and claim a violation it has not established.
+    if (indq) {
+      if (substr($0, i, length(dqtag)) == dqtag) { i += length(dqtag); indq = 0
+        if (tolower(dqv) ~ /(^|[^a-z])create[ \t\n]+([a-z]+[ \t\n]+)?([a-z]+[ \t\n]+)?table([^a-z]|$)/) dqddl = 1
+        dqv = ""; continue }
+      dqv = dqv c; i++; continue
+    }
+    if (c == "$") {
+      j = i + 1
+      while (j <= n && substr($0, j, 1) ~ /[A-Za-z0-9_]/) j++
+      if (j <= n && substr($0, j, 1) == "$") {
+        dqtag = substr($0, i, j - i + 1); indq = 1; dqv = ""; i = j + 1; continue
+      }
+    }
+    if (c == " " || c == "\t" || c == "\r") { i++; continue }
+    if (c == "-" && substr($0, i + 1, 1) == "-") break
+    if (c == "/" && substr($0, i + 1, 1) == "*") { inblk = 1; i += 2; continue }
+    if (c == "\"") { inq = 1; qv = ""; i++; continue }
+    if (c == "'")  { ins = 1; sv = ""; i++; continue }
+    if (c ~ /[A-Za-z_]/) {
+      v = ""
+      while (i <= n) { c = substr($0, i, 1); if (c !~ /[A-Za-z0-9_$]/) break; v = v c; i++ }
+      tok("W", tolower(v)); continue
+    }
+    if (c == ".") { tok("D", "."); i++; continue }
+    tok("P", c); i++
+  }
+  if (indq) dqv = dqv "\n"
+  if (inq) qv = qv "\n"
+  if (ins) sv = sv "\n"
+}
+END {
+  if (st == 3) emitpair("C")
+  # A final `delete from t` with no trailing semicolon is still WHERE-less, and the note said
+  # so before state 10 existed. State 10 waits for a terminator that end-of-input never sends.
+  if (st == 10) print "X\t\t"
+  # A SCANNER THAT LOST SYNC MUST NOT REPORT A CLEAN FILE. An unterminated quoted identifier
+  # or string means everything after it was read as something it is not, so the only honest
+  # answer about the rest of the file is that this gate could not read it.
+  if (indq) print "U\tunterminated-dollar-quoted-body\t"
+  if (dqddl) print "U\tddl-inside-a-dollar-quoted-body\t"
+  if (inblk) print "U\tunterminated-block-comment\t"
+  if (inq) print "U\tunterminated-quoted-identifier\t"
+  if (ins) print "U\tunterminated-string\t"
+  # DDL inside a string literal is executed by `execute`, and this scanner treats the string
+  # as data — the alternative, reading it, named tables nobody created and sent fixers to
+  # edit their data. Neither is a check, so it says so.
+  if (ddl) print "U\tddl-inside-a-string-literal\t"
+}
+SQLSCANAWK
+WORK_TOK="$(mktemp)"
+WORK_C="$(mktemp)"
+WORK_R="$(mktemp)"
+trap 'rm -f "$SQLSCAN" "$WORK_TOK" "$WORK_C" "$WORK_R"' EXIT
 
 for up in "$MIG"/*.sql; do
   [ -e "$up" ] || continue
   case "$up" in *.down.sql) continue;; esac
   down="${up%.sql}.down.sql"
   [ -f "$down" ] || fail "no rollback: $(basename "$up") needs $(basename "$down")"
-  strip_sql_comments "$up" > "$STRIPPED"
-  # tables created here must enable RLS here
-  while IFS= read -r tbl; do
-    if ! grep -qiE "alter\s+table\s+(if\s+exists\s+)?(public\.)?\"?${tbl}\"?\s+enable\s+row\s+level\s+security" "$STRIPPED"; then
-      fail "$(basename "$up"): table '$tbl' created without 'enable row level security' in the same file"
-    fi
-  done < <(grep -ioE "create\s+table\s+(if\s+not\s+exists\s+)?(public\.)?\"?[a-z_][a-z0-9_]*" "$STRIPPED" | sed -E 's/.*[ .]"?([a-z_][a-z0-9_]*)"?$/\1/i')
-  # destructive statements outside a WHERE are tier-3 by regex (non-negotiable 4); flag, do not block
-  if grep -qiE "^\s*(drop\s+table|truncate|delete\s+from\s+[a-z_.\"]+\s*;)" "$STRIPPED"; then
+  # TABLES CREATED HERE MUST ENABLE RLS HERE — DECIDED BY TOKENISING, NOT BY MATCHING.
+  #
+  # This check was a regex three times over and produced a finding in each of three
+  # consecutive review rounds, alternating direction every time:
+  #
+  #   - `create table "public"."orders"` read `public` as the table. Where a table genuinely
+  #     named `public` had RLS the file PASSED — a false green.
+  #   - Widening the ALTER side to any schema while the create side discarded it made the
+  #     check assert "SOME table called orders, in SOME schema, has RLS" under a message
+  #     naming one table: `alter table archive.orders` satisfied `create table public.orders`.
+  #     Another false green, added by the commit that removed the first one.
+  #   - Carrying the pair fixed that and broke four compliant files instead:
+  #     `mydb.public.orders`, `public."order items"`, `public."a.b"`, and `ALTER TABLE ONLY`
+  #     (which is what pg_dump emits) — reds naming tables that do not exist.
+  #   - And still open after all three: a quoted identifier lost its case, so
+  #     `create table public."Orders"` was satisfied by RLS on `orders`, which PostgreSQL
+  #     treats as a different table and which is what Prisma and Drizzle emit; a `""` inside
+  #     a quoted name ended the name early; a name containing a regex metacharacter built a
+  #     matcher wider than itself; a `create table` whose name sat on the NEXT line was not
+  #     seen at all, because grep is line-scoped — a silent pass.
+  #
+  # Every one of those is the same defect: a pattern deciding a question that needs a parse.
+  # So the statements are tokenised once, both sides through the SAME scanner, and the two
+  # (schema, table) pairs are compared as STRINGS. There is no interpolated regex left to be
+  # wider than the name it was given, no case flag to fold a quoted identifier, and no line
+  # boundary to hide a statement behind.
+  : > "$WORK_C"; : > "$WORK_R"
+  awk -f "$SQLSCAN" "$up" > "$WORK_TOK"
+
+  # ONE LINE PER RECORD, TAB-SEPARATED, VALUES ESCAPED. It was three lines per record, and a
+  # quoted identifier containing a newline then shifted every following triple: a file with
+  # `public."we<newline>ird"` and two more non-compliant tables reported ONE violation, naming
+  # `public.we` — a table that does not exist — and did not report the other two at all.
+  # Escaping is exact for comparison, because both sides are escaped by the same function.
+  #
+  # COMPARED WITH grep, NOT A NESTED SHELL LOOP. The loop was O(created x rls): 2000 compliant
+  # tables took 33.5s, quadrupling per doubling. That is the same shape the awk accumulator
+  # had — the fix for which had only moved it from awk into bash, which is worth saying out
+  # loud rather than calling the quadratic bullet closed.
+  # `-a` ON EVERY grep THAT READS THESE RECORDS. Without it, one byte that is invalid in the
+  # ambient locale makes GNU grep declare the file binary and SUPPRESS the matching line while
+  # still exiting 0 — so the record never reaches $WORK_C and that table is never compared
+  # against RLS at all. Measured under LC_ALL=C.UTF-8, the locale on ubuntu-latest: a file
+  # creating `public.clean` and `public."año"` (LATIN1), neither with RLS, reported ONE
+  # violation where the previous revision reported two. A NUL byte does it in any locale.
+  # PostgreSQL 16 confirms the dropped table is real and its RLS is off. A silent pass chosen
+  # by an encoding, and it arrived with the change that made this comparison a grep.
+  set +e
+  grep -a '^C	' "$WORK_TOK" | cut -f2- > "$WORK_C"
+  grep -a '^R	' "$WORK_TOK" | cut -f2- > "$WORK_R"
+  set -e
+
+  while IFS= read -r reason; do
+    [ -n "$reason" ] || continue
+    # THE REASON DECIDES THE SENTENCE. One message covered both kinds, and for a DDL string it
+    # was false: the scanner reads the statements after it perfectly well; what it does not
+    # read is the DDL inside the string. A message wider than the thing it describes is the
+    # defect this repository exists to catch.
+    case "$reason" in
+      ddl-inside-a-string-literal|ddl-inside-a-dollar-quoted-body)
+        unknown "$(basename "$up"): a string or dollar-quoted body here contains a 'create ... table'. This gate reads strings as data, so it cannot say what that statement creates or whether RLS follows it" ;;
+      *)
+        unknown "$(basename "$up"): $reason — this gate could not read the statements after it, and will not call the file clean" ;;
+    esac
+  done < <(grep -a '^U	' "$WORK_TOK" | cut -f2 || true)
+
+  while IFS="$(printf '\t')" read -r sch tbl; do
+    [ -n "$tbl" ] || continue
+    fail "$(basename "$up"): table '$sch.$tbl' created without 'enable row level security' in the same file"
+  done < <(grep -aFxv -f "$WORK_R" -- "$WORK_C" || true)
+
+  # destructive statements are tier-3 by note, not by block (non-negotiable 4). Emitted by
+  # the scanner from the token stream, so a commented-out `drop table` is a comment.
+  if grep -qa '^X	' "$WORK_TOK" 2>/dev/null; then
     echo "note [$GATE] $(basename "$up"): destructive statement present; this migration is tier-3"
   fi
 done

@@ -3,6 +3,14 @@
 # purpose: a reusable workflow cannot discover its own commit, so the ref you pin has to be
 # handed to it. Change both together.
 #
+# READ THIS BEFORE COPYING: the SHA shipped below is v1.2.0, and the Releases table in the
+# README marks v1.2.0 **do not use** — its service-role gate has a false green on a multi-line
+# dynamic import and does not terminate on a circular one. The template pins the PREVIOUS
+# release by construction, and the previous release is the bad one, so this is the first time
+# the convention has shipped a pin the table contradicts. TAKE v1.2.1 FROM THE TABLE. The
+# convention is left visible rather than quietly patched because it is the convention that
+# needs a decision, not this line.
+#
 # It does NOT name the release you are reading, and cannot: a commit cannot contain its own
 # SHA. What it does name is not derivable — from v1.0.2 onward it is the previous release, but
 # v1.0.0 and v1.0.1 pinned untagged ancestors, and v1.0.1 labelled its untagged pin with its
@@ -13,27 +21,43 @@
 on: [pull_request, push]
 jobs:
   gates:
-    uses: chiibitsu/gates/.github/workflows/gates.yml@7832ea67355f22a3e9077d061f1dd937cead905a # v1.1.0
+    uses: chiibitsu/gates/.github/workflows/gates.yml@44f6125815853021fcc4c8c96f5e2305cd4c4313 # v1.2.0
     with:
-      gates_ref: 7832ea67355f22a3e9077d061f1dd937cead905a # v1.1.0
+      gates_ref: 44f6125815853021fcc4c8c96f5e2305cd4c4313 # v1.2.0
 
   # ── The draft-stage reviewer (Tier 2, not a gate) ────────────────────────────────────────
   #
-  # Commented, and NOT because it is a placeholder. review.yml does not exist before v1.2.0, so
-  # pinning it at the SHA above — the previous release, which is what this template ships —
-  # would fail with a file-not-found on every run. A caller line that is broken by construction
-  # is worse than one that says why it is off.
+  # ACTIVE from v1.2.1 onward. It shipped commented in v1.2.0 for a reason that has since
+  # stopped being true: review.yml did not exist at the release this template pins, so an
+  # active line would have failed file-not-found on every run. review.yml exists at v1.2.0,
+  # which is what the pin below now names, so the block is live. A comment kept past the
+  # expiry of its own reason is how a file starts lying quietly.
   #
-  # To turn it on: take the v1.2.0 SHA (or later) from the Releases table in the README, put it
-  # on the `uses:` line below and on both `gates` lines above, and uncomment. There is ONE SHA
-  # in this block — the other line is the secret mapping, and an earlier wording said "BOTH
-  # lines below", which would have had a careful reader overwrite the token with a commit hash.
-  # It needs a repository secret CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`.
+  # It needs a repository secret CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`. Without
+  # it the job fails loudly rather than reviewing nothing.
   #
   # It runs ONLY while the pull request is a draft. On a ready PR the job reports `skipped`,
-  # which is an absence, not a pass — see AGENTS.md on accounting for a check that is not there.
+  # which is an absence, not a pass — account for it before flipping, as AGENTS.md says.
   #
-  # review:
-  #   uses: chiibitsu/gates/.github/workflows/review.yml@<v1.2.0-sha-from-the-releases-table>
-  #   secrets:
-  #     CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  # From v1.2.1 it also skips on pull requests FROM FORKS, and the pin below predates that.
+  # A fork PR gets no repository secrets, so the token expression is empty against a
+  # `required: true` declaration and the job is red for a reason having nothing to do with the
+  # code. Pinning the SHA on this line to v1.2.1 or later is what gets the skip; that is the
+  # same pin question the header above hands to the reader, named here so it is not discovered
+  # by a red run on someone's first outside contribution.
+  #
+  # ONE SHA in this block, on the `uses:` line. The line under `secrets:` is a token mapping.
+  review:
+    # PERMISSIONS ARE THE CALLER'S TO GRANT. A called workflow can only narrow the token it is
+    # handed, never widen it, so review.yml's own `permissions:` block is a ceiling and not a
+    # grant. On a repository whose default workflow token is read-only, the tally step's
+    # `gh pr comment` gets a 403 and the job is red on every draft PR — a reviewer that fails
+    # for a reason having nothing to do with the code.
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    uses: chiibitsu/gates/.github/workflows/review.yml@44f6125815853021fcc4c8c96f5e2305cd4c4313 # v1.2.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

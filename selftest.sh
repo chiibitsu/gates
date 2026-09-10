@@ -10,11 +10,14 @@
 #      A gate with no fixture fails this test. check_secrets.py's failure leg is its own
 #      --selftest instead: canary, fingerprint and negative-probe checks that assert the
 #      scanner still detects and still redacts.
-#   2. the CASE leg — run it against every fixtures/<gate>/cases/<name> and require exit 1
-#      from each. The bad fixture is one tree holding many violations, so it proves only
-#      that SOMETHING in it fails; a shape that stopped being detected hides behind the
-#      others still failing. A case is one tree holding one shape, so it can only pass by
-#      that shape still being caught. Every false green a reviewer finds gets a case here.
+#   2. the CASE leg — run it against every fixtures/<gate>/bad/cases/<name> and require exit 1
+#      AND a FAIL line from each (for the shell gates; see the marker note beside the loop).
+#      The bad fixture is one tree holding many violations, so it proves only that SOMETHING
+#      in it fails; a shape that stopped being detected hides behind the others still failing.
+#      A case is one tree holding one shape, so it can only pass by that shape still being
+#      caught. The FAIL line is half of that: UNKNOWN is also red, so without it a gate that
+#      lost the shape and merely tripped over a blind spot on the same tree still "passed".
+#      Every false green a reviewer finds gets a case here.
 #   3. the UNKNOWN leg — run it against every fixtures/<gate>/bad/unknown/<name> and require
 #      a RED exit that carries an UNKNOWN line and no FAIL line. "Could not check" must be
 #      as blocking as "found a violation" and must not be mistakable for one.
@@ -160,6 +163,38 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
   fi
   fixture="$FX/$gate/bad"
 
+  # THE VIOLATION MARKER IS A PROPERTY OF THE GATE, NOT OF THE HARNESS. `FAIL [` and
+  # `UNKNOWN [` come from `fail()` and `unknown()` in gates/lib.sh — the SHELL gates' helpers.
+  # The two vendored Python gates print their own lines (`references: N broken reference(s)`,
+  # `secrets: N possible credential(s) committed`) and cannot emit either marker, so asserting
+  # the marker for them would report a gate that detected its planted shape perfectly as
+  # having a blind spot. That is an assertion BROADER than its message, inside the leg written
+  # to catch assertions narrower than theirs.
+  #
+  # MEASURED, not reasoned. A fixture citing a missing path was planted at
+  # fixtures/check_references/bad/cases/broken-path/ and run: the gate found it exactly
+  # ("references: 1 broken reference(s)"), and the unguarded harness answered "went red on
+  # case 'broken-path' without printing a FAIL line — the red is a blind spot, not the planted
+  # violation". With the guard below it reports `ok  check_references catches case
+  # 'broken-path'`, which is what happened.
+  #
+  # The fixture is not kept, and the reason is a second finding rather than a tidy-up: unlike
+  # every shell gate, the vendored check_references.py has NO fixtures/ filter, so the planted
+  # citation is validated as though it were real and the TREE leg goes red on it. No Python
+  # gate can carry a cases/ fixture until that changes — and changing it means editing a
+  # vendored file, which is a policy decision and not this file's to make. So this guard is
+  # correct and currently unexercised, and that is stated here rather than left to look like
+  # dead code. This file's own header invites the fixture ("Every false green a reviewer finds
+  # gets a case here"); today the invitation cannot be accepted for these two gates.
+  #
+  # Losing the marker check for them costs nothing it was buying: the marker exists to tell a
+  # violation from an UNKNOWN, and a gate with no UNKNOWN outcome has nothing to confuse. For
+  # those gates a red is a violation by construction, and the exit code is the whole claim.
+  case "$name" in
+    *.sh) markers=1 ;;
+    *)    markers=0 ;;
+  esac
+
   # ---- 1. the failure leg ----
   if [ "$mode" = selftest ]; then
     # Its own probes are the fixture. Run from a staging directory holding BOTH vendored
@@ -209,11 +244,21 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
       cname="$(basename "$c")"
       run_gate "$g" "${c%/}"
       rc=$?
+      # THE RED IS NOT ENOUGH, and this leg used to accept it. A case fixture plants one
+      # violation and the claim printed is "catches case '<name>'" — but UNKNOWN is also red,
+      # so a gate that lost the ability to see the planted shape and merely tripped over a
+      # blind spot on the same tree passed this leg while the shape went undetected. That is
+      # an assertion narrower than its own message, in the code written to catch exactly
+      # that. The UNKNOWN leg below already asserts both halves; this one now does too.
+      n_fail="$(grep -c '^FAIL \[' "$OUT" || true)"
       if [ "$rc" -eq 0 ]; then
         echo "SELFTEST FAIL: $gate PASSED case '$cname' — that shape is no longer detected"
         sed 's/^/    /' "$OUT"; bad=1
       elif [ "$rc" -ne 1 ]; then
         echo "SELFTEST FAIL: $gate errored (exit $rc) on case '$cname' instead of reporting a violation"
+        sed 's/^/    /' "$OUT"; bad=1
+      elif [ "$markers" = 1 ] && [ "$n_fail" -eq 0 ]; then
+        echo "SELFTEST FAIL: $gate went red on case '$cname' without printing a FAIL line — the red is a blind spot, not the planted violation"
         sed 's/^/    /' "$OUT"; bad=1
       else
         echo "ok  $gate catches case '$cname'"
@@ -245,10 +290,10 @@ for g in "$HERE"/gates/*.sh "$HERE"/gates/*.py; do
       if [ "$rc" -eq 0 ]; then
         echo "SELFTEST FAIL: $gate went GREEN on unknown case '$uname' — it could not check and said so with a pass"
         sed 's/^/    /' "$OUT"; bad=1
-      elif [ "$n_unknown" -eq 0 ]; then
+      elif [ "$markers" = 1 ] && [ "$n_unknown" -eq 0 ]; then
         echo "SELFTEST FAIL: $gate went red on unknown case '$uname' without printing an UNKNOWN line — the reader cannot tell a blind spot from a violation"
         sed 's/^/    /' "$OUT"; bad=1
-      elif [ "$n_fail" -gt 0 ]; then
+      elif [ "$markers" = 1 ] && [ "$n_fail" -gt 0 ]; then
         echo "SELFTEST FAIL: $gate reported $n_fail violation(s) on unknown case '$uname', which plants none — it is blaming the tree for its own blind spot"
         sed 's/^/    /' "$OUT"; bad=1
       else
