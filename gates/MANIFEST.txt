@@ -27,3 +27,4 @@ nextjs-env            fixture
 proxy-location        fixture
 required-files        fixture
 service-role          fixture
+npm-audit             fixture

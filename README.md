@@ -79,6 +79,7 @@ than nothing: an empty list looks exercised and is not.
 | `gates/check_secrets.py` | credential **values** in the working tree, and — when a range is supplied — the pushed history, commit messages, author and committer identities, added and renamed filenames, ref names and annotated tag objects, all through a redaction choke point |
 | `gates/check_references.py` | every in-repo path cited in the docs resolves; anything it cannot parse is reported UNCHECKED, never passed |
 | `gates/service-role.sh` | no request-path module can reach the service-role secret. Walks the import graph out of `app/`, `pages/`, `middleware.*` and `proxy.*`; any import it cannot resolve is reported **UNKNOWN**, never assumed clean |
+| `gates/npm-audit.sh` | no production dependency in any `package-lock.json` carries a known **high or critical** advisory (`npm audit --omit=dev`). **Not hermetic:** it asks the npm registry, so a tree can go red later when an advisory is published, and a registry that does not answer is reported **UNKNOWN**, never ok. `yarn.lock`, `pnpm-lock.yaml` and `npm-shrinkwrap.json` are not read and are UNKNOWN too |
 
 `gates/lib.sh` is shared helpers, not a gate. It takes the tree to check as argument 1
 or in `GATE_ROOT`, and exits 2 if neither is given — this toolkit is checked out beside
@@ -416,6 +417,24 @@ header, which is the honest account of what that scanner does not do.
   `middleware.*`, `proxy.*`. A tree that depends on `next` and has none of them is UNKNOWN;
   a tree that does not depend on `next` is reported as having no request path to walk, in
   those words, rather than as a pass.
+- **The npm-audit gate is not deterministic and needs the network.** Every other gate gives the
+  same answer for the same tree; this one asks the registry's advisory endpoint, so a tree that
+  passed yesterday can fail today, and `selftest.sh` now needs registry access for its
+  `npm-audit` legs. That is deliberate — an advisory database is the one input a hermetic gate
+  cannot have — and the cost is stated here rather than discovered. When the registry does not
+  answer, or the lockfile cannot be read, the gate reports UNKNOWN (red), decided from the
+  JSON and never from `npm audit`'s exit status, which is 1 both for "found advisories" and
+  for "could not ask". Two failure modes cannot be planted as fixtures and were verified by
+  hand: an unreachable registry (`npm_config_registry=http://127.0.0.1:1` gives UNKNOWN) and a
+  hung request (the 120s `timeout`; absent on a stock macOS, where the audit runs unbounded).
+  Dependabot alerts on `fixtures/npm-audit/bad/**/package-lock.json` are expected: the lockfiles
+  there pin `lodash@4.17.20` on purpose, because a fixture has to be vulnerable to count.
+  Only high and critical fail; moderate and low advisories are not reported. Dev dependencies
+  are not audited: an advisory in a build tool does not ship. Each lockfile is audited on its own
+  (`--workspaces=false --prefix .`): npm otherwise resolves the prefix of a workspace member to
+  the workspace ROOT and audits the root's lock instead of the one named in the message, which
+  was a false green here before `cases/workspace-member-lockfile`. A lockfile tracked as a
+  symlink is followed, as npm follows it; a dangling one is UNKNOWN.
 - **Archives are not inspected.** Six review rounds found bypass after bypass in the
   machinery that opened them, and the rate never fell. It was removed.
 - **LFS objects in history.** `lfs: true` materialises the checked-out tree only, so a
